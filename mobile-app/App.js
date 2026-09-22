@@ -35,6 +35,7 @@ import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
 import * as Location from "expo-location";
 import EventSource from "react-native-sse";
 import * as Notifications from "expo-notifications";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useFonts } from "expo-font";
 import {
   BarlowCondensed_600SemiBold,
@@ -50,6 +51,9 @@ const API_BASE_URL = "https://tasky-api-836283338022.us-central1.run.app";
 
 // Cada cuánto vuelve a consultar la lista cuando no hay conexión de eventos.
 const POLL_INTERVAL_MS = 8000;
+
+// Dónde quedan guardados los turnos que tomó este Tasker.
+const MY_SHIFTS_KEY = "tasky.myShiftIds";
 
 // Las notificaciones se muestran aunque la app esté abierta: el Tasker puede
 // estar mirando otro turno cuando entra uno nuevo.
@@ -176,7 +180,7 @@ async function announce(raw) {
     await Notifications.scheduleNotificationAsync({
       content: {
         title: "Nuevo turno disponible",
-        body: "Se publicó un turno que podés tomar. Abrí Tasky para verlo.",
+        body: "Se publicó un turno que puedes tomar. Abrí Tasky para verlo.",
       },
       trigger: null, // inmediata
     });
@@ -210,11 +214,33 @@ function AppContent() {
   const [loading, setLoading] = useState(false);
   const [selectedId, setSelectedId] = useState(null);
 
-  // Qué turnos tomó este Tasker. Vive en el dispositivo porque la demo tiene un
-  // solo usuario; con Identity Platform esto sería una tabla de postulaciones
-  // por Tasker en el backend.
+  // Qué turnos tomó este Tasker. Se guarda en el dispositivo porque la demo
+  // tiene un solo usuario; con Identity Platform esto sería una tabla de
+  // postulaciones por Tasker, y el turno vendría marcado desde el API.
   const [myShiftIds, setMyShiftIds] = useState([]);
+  const [restored, setRestored] = useState(false);
   const [live, setLive] = useState(false);
+
+  // Recuperar lo guardado antes de permitir escribir: si no, el primer render
+  // con la lista vacía pisaría los turnos tomados en sesiones anteriores.
+  useEffect(() => {
+    let alive = true;
+    AsyncStorage.getItem(MY_SHIFTS_KEY)
+      .then((raw) => {
+        if (!alive) return;
+        if (raw) setMyShiftIds(JSON.parse(raw));
+      })
+      .catch(() => {})
+      .finally(() => alive && setRestored(true));
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!restored) return;
+    AsyncStorage.setItem(MY_SHIFTS_KEY, JSON.stringify(myShiftIds)).catch(() => {});
+  }, [myShiftIds, restored]);
 
   // silent: las recargas automáticas no muestran spinner ni alertan si fallan.
   // Un corte de red momentáneo no tiene por qué interrumpir al Tasker.
@@ -293,7 +319,11 @@ function AppContent() {
     };
   }, [token, loadShifts]);
 
-  if (!fontsLoaded) return <View style={{ flex: 1, backgroundColor: C.ink }} />;
+  // Esperar también a la restauración evita un parpadeo en el que un turno ya
+  // tomado aparece como disponible.
+  if (!fontsLoaded || !restored) {
+    return <View style={{ flex: 1, backgroundColor: C.ink }} />;
+  }
 
   const selected = shifts.find((s) => s.id === selectedId) || null;
 

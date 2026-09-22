@@ -559,7 +559,7 @@ func updateShift(w http.ResponseWriter, r *http.Request, id int64) {
 		return
 	}
 	if req.TaskersNeeded < confirmed {
-		http.Error(w, fmt.Sprintf("ya hay %d Taskers confirmados: no podés bajar el cupo por debajo de eso", confirmed), http.StatusConflict)
+		http.Error(w, fmt.Sprintf("ya hay %d Taskers confirmados: no puedes bajar el cupo por debajo de eso", confirmed), http.StatusConflict)
 		return
 	}
 

@@ -257,7 +257,7 @@ function ManualFallback({
   return (
     <div className="grid gap-3">
       <p className="text-xs text-slate-muted">
-        El mapa no está configurado en este entorno. Podés cargar las coordenadas a mano.
+        El mapa no está configurado en este entorno. Puedes cargar las coordenadas a mano.
       </p>
       <Input
         name="address"
