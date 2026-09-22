@@ -9,7 +9,11 @@ de Taskers en terreno.
 ```
 backend/      API en Go (Cloud Run + Cloud SQL MySQL 8.0)
 mobile-app/   App Expo / React Native
+web/          Panel de operaciones (Next.js 16 + Tailwind 4 + shadcn/ui)
 ```
+
+Los tres clientes consumen **la misma API**: una sola fuente de verdad para el estado de los
+turnos, ya sea que lo mire un coordinador desde el escritorio o un Tasker desde el teléfono.
 
 ## Dominio
 
@@ -60,6 +64,21 @@ Dirección de diseño *workwear*: la paleta sale de la ropa de trabajo real de u
 (ámbar alta visibilidad sobre azul mezclilla profundo), tipografía Barlow Condensed para títulos
 —lee como señalética de bodega— e Inter para cuerpo. Cada turno se dibuja como un **talón
 troquelado**: mitad entrada de evento, mitad tarjeta de reloj control.
+
+## Web — panel de operaciones
+
+Next.js 16 (App Router) con Tailwind 4, shadcn/ui y lucide-react.
+
+- **Server Components**: el tablero se arma en el servidor con `cache: "no-store"` — los turnos
+  cambian de estado con el reloj, así que cachear la lista no tiene sentido.
+- **Server Actions**: login y mutaciones corren en el servidor; el token nunca llega al navegador.
+- **Cookie `httpOnly`**: la sesión no es legible desde JavaScript, a diferencia de `localStorage`.
+- **`revalidatePath`** después de cada mutación: el tablero se refresca solo, sin estado cliente
+  que mantener sincronizado.
+- Los turnos se agrupan por jornada, que es como piensa la semana un coordinador.
+
+> Nota: esta versión de shadcn/ui ya migró de Radix a **Base UI**, así que los triggers se componen
+> con `render={...}` en lugar de `asChild`.
 
 ## Cómo correr localmente
 

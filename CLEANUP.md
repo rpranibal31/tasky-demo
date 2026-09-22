@@ -18,8 +18,9 @@ El proyecto queda 30 días en estado "pendiente de eliminación" (recuperable co
 ## Opción granular (si querés conservar el proyecto)
 
 ```powershell
-# 1. Borrar el servicio de Cloud Run
+# 1. Borrar los servicios de Cloud Run
 gcloud run services delete tasky-api --region=us-central1 --project=tasky-demo-3938 --quiet
+gcloud run services delete tasky-web --region=us-central1 --project=tasky-demo-3938 --quiet
 
 # 2. Borrar la instancia de Cloud SQL  <-- esto es lo que más cobra
 gcloud sql instances delete tasky-db --project=tasky-demo-3938 --quiet

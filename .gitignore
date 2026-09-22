@@ -43,3 +43,8 @@ yarn-error.*
 # generated native folders
 /ios
 /android
+
+# Next.js
+web/.next/
+web/node_modules/
+web/tsconfig.tsbuildinfo
