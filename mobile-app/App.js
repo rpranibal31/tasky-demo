@@ -12,13 +12,14 @@
 // cada turno se dibuja como un talón troquelado, mitad entrada de evento, mitad
 // tarjeta de reloj control.
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import {
   View,
   Text,
   TextInput,
   Pressable,
   FlatList,
+  AppState,
   StatusBar,
   StyleSheet,
   ActivityIndicator,
@@ -32,6 +33,7 @@ import {
 // y además soporta elegir qué bordes respetar.
 import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
 import * as Location from "expo-location";
+import EventSource from "react-native-sse";
 import { useFonts } from "expo-font";
 import {
   BarlowCondensed_600SemiBold,
@@ -44,6 +46,9 @@ import {
 } from "@expo-google-fonts/inter";
 
 const API_BASE_URL = "https://tasky-api-836283338022.us-central1.run.app";
+
+// Cada cuánto vuelve a consultar la lista cuando no hay conexión de eventos.
+const POLL_INTERVAL_MS = 8000;
 
 /* ---------------------------------------------------------------- tokens -- */
 
@@ -165,20 +170,80 @@ function AppContent() {
   // solo usuario; con Identity Platform esto sería una tabla de postulaciones
   // por Tasker en el backend.
   const [myShiftIds, setMyShiftIds] = useState([]);
+  const [live, setLive] = useState(false);
 
-  const loadShifts = useCallback(async () => {
-    setLoading(true);
+  // silent: las recargas automáticas no muestran spinner ni alertan si fallan.
+  // Un corte de red momentáneo no tiene por qué interrumpir al Tasker.
+  const loadShifts = useCallback(async ({ silent = false } = {}) => {
+    if (!silent) setLoading(true);
     try {
       setShifts(await api("/shifts"));
     } catch (err) {
-      Alert.alert("No se pudieron cargar los turnos", err.message);
+      if (!silent) Alert.alert("No se pudieron cargar los turnos", err.message);
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   }, []);
 
   useEffect(() => {
     if (token) loadShifts();
+  }, [token, loadShifts]);
+
+  // Conexión de eventos: el servidor avisa apenas algo cambia, sin esperar al
+  // próximo sondeo. Si se cae, el sondeo de abajo sigue cubriendo — por eso este
+  // efecto no reintenta con lógica propia ni bloquea nada si falla.
+  useEffect(() => {
+    if (!token) return;
+
+    const source = new EventSource(`${API_BASE_URL}/events`, {
+      headers: { Authorization: `Bearer ${token}` },
+      pollingInterval: 0, // reconexión la maneja la librería
+    });
+
+    source.addEventListener("open", () => setLive(true));
+    source.addEventListener("error", () => setLive(false));
+    source.addEventListener("close", () => setLive(false));
+    source.addEventListener("shifts", () => loadShifts({ silent: true }));
+
+    return () => {
+      setLive(false);
+      source.removeAllEventListeners();
+      source.close();
+    };
+  }, [token, loadShifts]);
+
+  // El coordinador publica turnos desde el panel web y el Tasker tiene que
+  // verlos sin reabrir la app. El sondeo es la red de seguridad: corre siempre,
+  // y se apaga mientras la app está en segundo plano para no gastar batería ni
+  // datos en algo que nadie está mirando.
+  useEffect(() => {
+    if (!token) return;
+
+    let timer = null;
+    const start = () => {
+      if (timer) return;
+      timer = setInterval(() => loadShifts({ silent: true }), POLL_INTERVAL_MS);
+    };
+    const stop = () => {
+      if (!timer) return;
+      clearInterval(timer);
+      timer = null;
+    };
+
+    start();
+    const sub = AppState.addEventListener("change", (state) => {
+      if (state === "active") {
+        loadShifts({ silent: true });
+        start();
+      } else {
+        stop();
+      }
+    });
+
+    return () => {
+      stop();
+      sub.remove();
+    };
   }, [token, loadShifts]);
 
   if (!fontsLoaded) return <View style={{ flex: 1, backgroundColor: C.ink }} />;
@@ -217,6 +282,7 @@ function AppContent() {
       shifts={shifts}
       myShiftIds={myShiftIds}
       loading={loading}
+      live={live}
       onRefresh={loadShifts}
       onSelect={(id) => {
         setSelectedId(id);
@@ -299,7 +365,7 @@ function LoginScreen({ onLoggedIn }) {
 // La app del Tasker solo muestra turnos: los que tomó y los que todavía puede
 // tomar. Publicar, editar y cancelar son operaciones del coordinador y viven en
 // el panel web.
-function ListScreen({ shifts, myShiftIds, loading, onRefresh, onSelect }) {
+function ListScreen({ shifts, myShiftIds, loading, live, onRefresh, onSelect }) {
   const mine = shifts.filter((x) => myShiftIds.includes(x.id));
   const available = shifts.filter(
     (x) => !myShiftIds.includes(x.id) && x.status === "abierto"
@@ -323,8 +389,9 @@ function ListScreen({ shifts, myShiftIds, loading, onRefresh, onSelect }) {
         <View style={s.header}>
           <View style={s.headerRow}>
             <Text style={s.wordmark}>TASKY</Text>
-            <View style={s.countChip}>
-              <Text style={s.countChipText}>{mine.length}</Text>
+            <View style={s.liveRow}>
+              <View style={[s.liveDot, { backgroundColor: live ? C.hiviz : C.inkLine }]} />
+              <Text style={s.liveText}>{live ? "En vivo" : "Sin conexión"}</Text>
             </View>
           </View>
           <Text style={s.headerTitle}>Turnos</Text>
@@ -664,6 +731,15 @@ const s = StyleSheet.create({
     alignItems: "center",
   },
   countChipText: { fontFamily: F.display, fontSize: 16, color: C.hiviz, letterSpacing: 1 },
+  liveRow: { flexDirection: "row", alignItems: "center", gap: 7 },
+  liveDot: { width: 7, height: 7, borderRadius: 4 },
+  liveText: {
+    fontFamily: F.bodyBold,
+    fontSize: 10,
+    letterSpacing: 1.4,
+    textTransform: "uppercase",
+    color: C.mutedInk,
+  },
   headerTitle: {
     fontFamily: F.display,
     fontSize: 38,

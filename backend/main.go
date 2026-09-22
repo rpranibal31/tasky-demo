@@ -14,6 +14,8 @@
 //	PUT    /shifts/{id}
 //	DELETE /shifts/{id}
 //	POST   /shifts/{id}/confirm
+//	POST   /shifts/{id}/checkin
+//	GET    /events   (SSE: avisa cuando algo cambia)
 //
 // Auth simplificada para demo: valida contra ADMIN_EMAIL/ADMIN_PASSWORD (env vars)
 // y devuelve un token estático. En producción esto lo reemplazarías por Identity
@@ -30,6 +32,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	_ "github.com/go-sql-driver/mysql"
@@ -83,6 +86,61 @@ type checkInRequest struct {
 
 const defaultRadiusM = 150
 
+/* ------------------------------------------------------------- eventos -- */
+
+// hub reparte avisos de cambio a los clientes conectados por SSE. Es
+// deliberadamente mínimo: no guarda historial ni garantiza entrega, solo avisa
+// "algo cambió, volvé a pedir la lista". Si un aviso se pierde, el sondeo del
+// cliente lo cubre.
+//
+// Limitación conocida: el hub vive en memoria, así que solo alcanza a los
+// clientes conectados a ESTA instancia. Con varias instancias de Cloud Run haría
+// falta un bus compartido (Pub/Sub o Redis) para que el aviso llegue a todos.
+type hub struct {
+	mu      sync.RWMutex
+	clients map[chan string]struct{}
+}
+
+func newHub() *hub {
+	return &hub{clients: make(map[chan string]struct{})}
+}
+
+func (h *hub) subscribe() chan string {
+	// Con búfer: si un cliente está lento, el broadcast no se bloquea.
+	ch := make(chan string, 8)
+	h.mu.Lock()
+	h.clients[ch] = struct{}{}
+	h.mu.Unlock()
+	return ch
+}
+
+func (h *hub) unsubscribe(ch chan string) {
+	h.mu.Lock()
+	delete(h.clients, ch)
+	h.mu.Unlock()
+	close(ch)
+}
+
+func (h *hub) broadcast(event string) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	for ch := range h.clients {
+		select {
+		case ch <- event:
+		default:
+			// Cliente saturado: se descarta el aviso en vez de frenar al resto.
+		}
+	}
+}
+
+func (h *hub) count() int {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return len(h.clients)
+}
+
+var events = newHub()
+
 type loginRequest struct {
 	Email    string `json:"email"`
 	Password string `json:"password"`
@@ -110,6 +168,7 @@ func main() {
 	mux.HandleFunc("/shifts/{id}", withCORS(handleShiftByID))
 	mux.HandleFunc("/shifts/{id}/confirm", withCORS(handleConfirm))
 	mux.HandleFunc("/shifts/{id}/checkin", withCORS(handleCheckIn))
+	mux.HandleFunc("/events", withCORS(handleEvents))
 
 	port := os.Getenv("PORT")
 	if port == "" {
@@ -397,6 +456,7 @@ func createShift(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	notify("created", id)
 	writeJSON(w, http.StatusCreated, shift)
 }
 
@@ -519,6 +579,7 @@ func updateShift(w http.ResponseWriter, r *http.Request, id int64) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	notify("updated", id)
 	writeJSON(w, http.StatusOK, shift)
 }
 
@@ -536,6 +597,7 @@ func deleteShift(w http.ResponseWriter, r *http.Request, id int64) {
 		http.Error(w, "turno no encontrado", http.StatusNotFound)
 		return
 	}
+	notify("deleted", id)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -574,6 +636,7 @@ func handleConfirm(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	notify("confirmed", id)
 	writeJSON(w, http.StatusOK, shift)
 }
 
@@ -605,6 +668,54 @@ func scanShift(sc scanner) (Shift, error) {
 	s.Status = deriveStatus(time.Now().In(chile), asChile(startsAt), asChile(endsAt),
 		s.TaskersNeeded, s.TaskersConfirmed)
 	return s, nil
+}
+
+// handleEvents mantiene abierta una conexión SSE y empuja un aviso cada vez que
+// cambia algo. No viaja el turno completo a propósito: el cliente vuelve a pedir
+// la lista, y así una reconexión o un aviso perdido no dejan pantallas
+// desincronizadas.
+func handleEvents(w http.ResponseWriter, r *http.Request) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming no soportado", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	// Cloud Run y los proxies intermedios pueden acumular la respuesta; esto
+	// pide explícitamente que no lo hagan.
+	w.Header().Set("X-Accel-Buffering", "no")
+	w.WriteHeader(http.StatusOK)
+
+	ch := events.subscribe()
+	defer events.unsubscribe(ch)
+
+	fmt.Fprintf(w, "event: ready\ndata: {\"clients\":%d}\n\n", events.count())
+	flusher.Flush()
+
+	// El latido evita que un proxy corte una conexión que parece inactiva.
+	heartbeat := time.NewTicker(25 * time.Second)
+	defer heartbeat.Stop()
+
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case msg := <-ch:
+			fmt.Fprintf(w, "event: shifts\ndata: %s\n\n", msg)
+			flusher.Flush()
+		case <-heartbeat.C:
+			fmt.Fprint(w, ": keep-alive\n\n")
+			flusher.Flush()
+		}
+	}
+}
+
+// notify avisa a los clientes conectados qué pasó, para que recarguen.
+func notify(reason string, shiftID int64) {
+	events.broadcast(fmt.Sprintf(`{"reason":%q,"shift_id":%d}`, reason, shiftID))
 }
 
 // handleCheckIn valida que el Tasker esté dentro del cerco del turno antes de
@@ -682,6 +793,7 @@ func handleCheckIn(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	notify("checkin", id)
 	result["message"] = fmt.Sprintf("Check-in registrado a %s del punto.", humanDistance(distance))
 	writeJSON(w, http.StatusCreated, result)
 }
