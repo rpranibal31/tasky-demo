@@ -48,3 +48,6 @@ yarn-error.*
 web/.next/
 web/node_modules/
 web/tsconfig.tsbuildinfo
+
+# Documentos de la prueba tecnica (no publicar)
+*.pdf
