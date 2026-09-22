@@ -1,7 +1,11 @@
-// Tasky mobile — coordinación de turnos.
+// Tasky mobile — la app del Tasker.
 //
-// Cuatro pantallas con estado simple (sin react-navigation, para mantener la
-// demo en un archivo legible): login -> lista -> detalle -> formulario.
+// Este cliente es el lado del trabajador: ve los turnos disponibles, toma uno y
+// marca su llegada validada por GPS. Publicar, editar y cancelar turnos son
+// operaciones del coordinador y viven en el panel web: misma API, dos roles.
+//
+// Tres pantallas con estado simple, sin react-navigation, para que la demo
+// quepa en un archivo legible: login -> lista -> detalle.
 //
 // Dirección de diseño: "workwear". La paleta sale de la ropa de trabajo real de
 // un Tasker en terreno (ámbar alta visibilidad sobre azul mezclilla profundo) y
@@ -85,18 +89,6 @@ const monthOf = (iso) => MONTHS[parseInt(iso.slice(5, 7), 10) - 1];
 const clockOf = (iso) => iso.slice(11, 16);
 const dateOf = (iso) => iso.slice(0, 10);
 
-function todayISO() {
-  const n = new Date();
-  return new Date(Date.UTC(n.getFullYear(), n.getMonth(), n.getDate())).toISOString().slice(0, 10);
-}
-
-function addDays(iso, delta) {
-  const [y, m, d] = iso.split("-").map(Number);
-  const dt = new Date(Date.UTC(y, m - 1, d));
-  dt.setUTCDate(dt.getUTCDate() + delta);
-  return dt.toISOString().slice(0, 10);
-}
-
 function weekdayOf(iso) {
   const [y, m, d] = iso.split("-").map(Number);
   return WEEKDAYS[new Date(Date.UTC(y, m - 1, d)).getUTCDay()];
@@ -164,11 +156,15 @@ function AppContent() {
   });
 
   const [token, setToken] = useState(null);
-  const [screen, setScreen] = useState("login"); // login | list | detail | form
+  const [screen, setScreen] = useState("login"); // login | list | detail
   const [shifts, setShifts] = useState([]);
   const [loading, setLoading] = useState(false);
   const [selectedId, setSelectedId] = useState(null);
-  const [editing, setEditing] = useState(null); // null = crear, shift = editar
+
+  // Qué turnos tomó este Tasker. Vive en el dispositivo porque la demo tiene un
+  // solo usuario; con Identity Platform esto sería una tabla de postulaciones
+  // por Tasker en el backend.
+  const [myShiftIds, setMyShiftIds] = useState([]);
 
   const loadShifts = useCallback(async () => {
     setLoading(true);
@@ -200,36 +196,17 @@ function AppContent() {
     );
   }
 
-  if (screen === "form") {
-    return (
-      <FormScreen
-        token={token}
-        shift={editing}
-        onCancel={() => setScreen(editing ? "detail" : "list")}
-        onSaved={async () => {
-          await loadShifts();
-          setScreen(editing ? "detail" : "list");
-          setEditing(null);
-        }}
-      />
-    );
-  }
-
   if (screen === "detail" && selected) {
     return (
       <DetailScreen
         token={token}
         shift={selected}
+        mine={myShiftIds.includes(selected.id)}
         onBack={() => setScreen("list")}
         onChanged={loadShifts}
-        onEdit={() => {
-          setEditing(selected);
-          setScreen("form");
-        }}
-        onDeleted={async () => {
+        onTaken={async () => {
+          setMyShiftIds((ids) => [...ids, selected.id]);
           await loadShifts();
-          setSelectedId(null);
-          setScreen("list");
         }}
       />
     );
@@ -238,15 +215,12 @@ function AppContent() {
   return (
     <ListScreen
       shifts={shifts}
+      myShiftIds={myShiftIds}
       loading={loading}
       onRefresh={loadShifts}
       onSelect={(id) => {
         setSelectedId(id);
         setScreen("detail");
-      }}
-      onNew={() => {
-        setEditing(null);
-        setScreen("form");
       }}
     />
   );
@@ -322,8 +296,25 @@ function LoginScreen({ onLoggedIn }) {
   );
 }
 
-function ListScreen({ shifts, loading, onRefresh, onSelect, onNew }) {
-  const open = shifts.filter((x) => x.status === "abierto").length;
+// La app del Tasker solo muestra turnos: los que tomó y los que todavía puede
+// tomar. Publicar, editar y cancelar son operaciones del coordinador y viven en
+// el panel web.
+function ListScreen({ shifts, myShiftIds, loading, onRefresh, onSelect }) {
+  const mine = shifts.filter((x) => myShiftIds.includes(x.id));
+  const available = shifts.filter(
+    (x) => !myShiftIds.includes(x.id) && x.status === "abierto"
+  );
+
+  const sections = [
+    { key: "mine", title: "Mis turnos", data: mine },
+    { key: "available", title: "Disponibles", data: available },
+  ].filter((sec) => sec.data.length > 0);
+
+  // Una sola lista plana con encabezados: evita traer SectionList solo por esto.
+  const rows = sections.flatMap((sec) => [
+    { type: "header", key: sec.key, title: sec.title, count: sec.data.length },
+    ...sec.data.map((shift) => ({ type: "shift", key: `s${shift.id}`, shift })),
+  ]);
 
   return (
     <View style={s.rootInk}>
@@ -333,12 +324,14 @@ function ListScreen({ shifts, loading, onRefresh, onSelect, onNew }) {
           <View style={s.headerRow}>
             <Text style={s.wordmark}>TASKY</Text>
             <View style={s.countChip}>
-              <Text style={s.countChipText}>{shifts.length}</Text>
+              <Text style={s.countChipText}>{mine.length}</Text>
             </View>
           </View>
           <Text style={s.headerTitle}>Turnos</Text>
           <Text style={s.headerSub}>
-            {open > 0 ? `${open} sin cubrir` : "Todos los turnos cubiertos"}
+            {mine.length === 0
+              ? `${available.length} disponibles para tomar`
+              : `${mine.length} ${mine.length === 1 ? "turno tomado" : "turnos tomados"} · ${available.length} disponibles`}
           </Text>
         </View>
 
@@ -349,49 +342,61 @@ function ListScreen({ shifts, loading, onRefresh, onSelect, onNew }) {
             </View>
           ) : (
             <FlatList
-              data={shifts}
-              keyExtractor={(item) => String(item.id)}
+              data={rows}
+              keyExtractor={(item) => item.key}
               contentContainerStyle={s.listPad}
               refreshControl={
                 <RefreshControl refreshing={loading} onRefresh={onRefresh} tintColor={C.ink} />
               }
-              renderItem={({ item }) => (
-                <ShiftStub shift={item} onPress={() => onSelect(item.id)} />
-              )}
+              renderItem={({ item }) =>
+                item.type === "header" ? (
+                  <View style={s.sectionHead}>
+                    <Text style={s.sectionHeadText}>{item.title}</Text>
+                    <View style={s.sectionRule} />
+                    <Text style={s.sectionHeadCount}>{item.count}</Text>
+                  </View>
+                ) : (
+                  <ShiftStub
+                    shift={item.shift}
+                    mine={myShiftIds.includes(item.shift.id)}
+                    onPress={() => onSelect(item.shift.id)}
+                  />
+                )
+              }
               ListEmptyComponent={
                 <View style={s.empty}>
-                  <Text style={s.emptyTitle}>Sin turnos publicados</Text>
+                  <Text style={s.emptyTitle}>No hay turnos disponibles</Text>
                   <Text style={s.emptyBody}>
-                    Publicá el primer turno para empezar a coordinar Taskers.
+                    Cuando una empresa publique un turno, aparece acá para que lo tomes.
                   </Text>
                 </View>
               }
             />
           )}
         </View>
-
-        <View style={s.bottomBar}>
-          <ActionButton label="Publicar turno" onPress={onNew} variant="hiviz" />
-        </View>
       </SafeAreaView>
     </View>
   );
 }
 
-function DetailScreen({ token, shift, onBack, onChanged, onEdit, onDeleted }) {
+function DetailScreen({ token, shift, mine, onBack, onChanged, onTaken }) {
   const [busy, setBusy] = useState(false);
   const st = STATUS[shift.status] || STATUS.abierto;
   const full = shift.taskers_confirmed >= shift.taskers_needed;
   const closed = shift.status === "cerrado";
   const hasFence = !!(shift.lat || shift.lng);
 
-  async function confirmTasker() {
+  // Tomar el turno es la misma operación que usa el coordinador para confirmar
+  // dotación: quien decide si queda cupo es el servidor, con un UPDATE
+  // condicional. Si dos Taskers postulan a la vez, uno recibe 409.
+  async function takeShift() {
     setBusy(true);
     try {
       await api(`/shifts/${shift.id}/confirm`, { method: "POST", token });
-      await onChanged();
+      await onTaken();
+      Alert.alert("Turno tomado", `Te esperamos en ${shift.venue}.`);
     } catch (err) {
-      Alert.alert("No se pudo confirmar", err.message);
+      Alert.alert("No pudiste tomar el turno", err.message);
     } finally {
       setBusy(false);
     }
@@ -431,30 +436,6 @@ function DetailScreen({ token, shift, onBack, onChanged, onEdit, onDeleted }) {
     } finally {
       setBusy(false);
     }
-  }
-
-  function askDelete() {
-    Alert.alert(
-      "Cancelar este turno",
-      `${shift.venue} · ${dayOf(shift.starts_at)} ${monthOf(shift.starts_at)}. Los Taskers confirmados quedan liberados.`,
-      [
-        { text: "Volver", style: "cancel" },
-        {
-          text: "Cancelar turno",
-          style: "destructive",
-          onPress: async () => {
-            setBusy(true);
-            try {
-              await api(`/shifts/${shift.id}`, { method: "DELETE", token });
-              await onDeleted();
-            } catch (err) {
-              Alert.alert("No se pudo cancelar", err.message);
-              setBusy(false);
-            }
-          },
-        },
-      ]
-    );
   }
 
   return (
@@ -497,251 +478,58 @@ function DetailScreen({ token, shift, onBack, onChanged, onEdit, onDeleted }) {
               {shift.taskers_confirmed} de {shift.taskers_needed} Taskers confirmados
             </Text>
 
-            <Text style={s.sectionLabel}>Cerco de llegada</Text>
-            {hasFence ? (
+            {mine ? (
               <>
-                <Text style={s.fenceLine}>
-                  Radio de {shift.radius_m} m sobre el punto del turno
-                </Text>
-                <Text style={s.meterCaption}>
-                  {shift.checkins === 0
-                    ? "Todavía nadie marcó llegada"
-                    : `${shift.checkins} ${shift.checkins === 1 ? "llegada registrada" : "llegadas registradas"}`}
-                </Text>
-                <View style={{ height: 14 }} />
-                <ActionButton
-                  label={busy ? "Ubicando…" : "Marcar llegada"}
-                  onPress={doCheckIn}
-                  disabled={busy || closed}
-                  variant="hiviz"
-                />
+                <Text style={s.sectionLabel}>Marcar llegada</Text>
+                {hasFence ? (
+                  <>
+                    <Text style={s.fenceLine}>
+                      Tenés que estar a menos de {shift.radius_m} m del punto
+                    </Text>
+                    <Text style={s.meterCaption}>
+                      {shift.checkins === 0
+                        ? "Todavía nadie marcó llegada en este turno"
+                        : `${shift.checkins} ${shift.checkins === 1 ? "llegada registrada" : "llegadas registradas"}`}
+                    </Text>
+                    <View style={{ height: 14 }} />
+                    <ActionButton
+                      label={busy ? "Ubicando…" : "Marcar llegada"}
+                      onPress={doCheckIn}
+                      disabled={busy || closed}
+                      variant="hiviz"
+                    />
+                  </>
+                ) : (
+                  <Text style={s.fenceLine}>
+                    Este turno todavía no tiene punto configurado.
+                  </Text>
+                )}
               </>
             ) : (
-              <Text style={s.fenceLine}>Este turno no tiene cerco configurado.</Text>
+              <>
+                <View style={{ height: 28 }} />
+                <ActionButton
+                  label={
+                    closed
+                      ? "El turno ya cerró"
+                      : full
+                        ? "Cupo completo"
+                        : busy
+                          ? "Tomando…"
+                          : "Tomar turno"
+                  }
+                  onPress={takeShift}
+                  disabled={busy || full || closed}
+                  variant="hiviz"
+                />
+                {full && !closed ? (
+                  <Text style={s.hint}>
+                    Otros Taskers ya completaron el cupo de este turno.
+                  </Text>
+                ) : null}
+              </>
             )}
-
-            <View style={{ height: 28 }} />
-            <ActionButton
-              label={full ? "Cupo completo" : busy ? "Confirmando…" : "Confirmar Tasker"}
-              onPress={confirmTasker}
-              disabled={busy || full || closed}
-              variant="ink"
-            />
-            <View style={{ height: 10 }} />
-            <ActionButton label="Editar turno" onPress={onEdit} disabled={busy} variant="ghost" />
-            <View style={{ height: 10 }} />
-            <ActionButton
-              label="Cancelar turno"
-              onPress={askDelete}
-              disabled={busy}
-              variant="danger"
-            />
           </ScrollView>
-        </View>
-      </SafeAreaView>
-    </View>
-  );
-}
-
-function FormScreen({ token, shift, onCancel, onSaved }) {
-  const editMode = !!shift;
-  const [venue, setVenue] = useState(shift ? shift.venue : "");
-  const [role, setRole] = useState(shift ? shift.role : "");
-  const [date, setDate] = useState(shift ? dateOf(shift.starts_at) : addDays(todayISO(), 1));
-  const [start, setStart] = useState(shift ? clockOf(shift.starts_at) : "14:00");
-  const [end, setEnd] = useState(shift ? clockOf(shift.ends_at) : "22:00");
-  const [needed, setNeeded] = useState(shift ? shift.taskers_needed : 4);
-  const [address, setAddress] = useState(shift ? shift.address : "");
-  const [radius, setRadius] = useState(shift ? shift.radius_m || 150 : 150);
-  const [coords, setCoords] = useState(
-    shift && (shift.lat || shift.lng) ? { lat: shift.lat, lng: shift.lng } : null
-  );
-  const [locating, setLocating] = useState(false);
-  const [saving, setSaving] = useState(false);
-
-  // Tomar el punto donde estás parado es la forma más rápida de definir un
-  // cerco en terreno: el coordinador llega a la sede y marca ahí mismo.
-  async function useMyLocation() {
-    setLocating(true);
-    try {
-      const { status } = await Location.requestForegroundPermissionsAsync();
-      if (status !== "granted") {
-        Alert.alert(
-          "Falta el permiso de ubicación",
-          "Tasky la necesita para fijar el punto del turno."
-        );
-        return;
-      }
-      const pos = await Location.getCurrentPositionAsync({
-        accuracy: Location.Accuracy.Balanced,
-      });
-      setCoords({ lat: pos.coords.latitude, lng: pos.coords.longitude });
-    } catch (err) {
-      Alert.alert("No se pudo obtener tu ubicación", err.message);
-    } finally {
-      setLocating(false);
-    }
-  }
-
-  async function save() {
-    if (!venue.trim()) return Alert.alert("Falta la sede", "Indicá dónde se ejecuta el turno.");
-    if (!role.trim()) return Alert.alert("Falta el servicio", "Indicá qué van a hacer los Taskers.");
-
-    setSaving(true);
-    try {
-      const body = {
-        venue: venue.trim(),
-        role: role.trim(),
-        address: address.trim(),
-        lat: coords ? coords.lat : 0,
-        lng: coords ? coords.lng : 0,
-        radius_m: radius,
-        date,
-        start_time: start,
-        end_time: end,
-        taskers_needed: needed,
-      };
-      await api(editMode ? `/shifts/${shift.id}` : "/shifts", {
-        method: editMode ? "PUT" : "POST",
-        token,
-        body,
-      });
-      await onSaved();
-    } catch (err) {
-      Alert.alert(editMode ? "No se pudo guardar" : "No se pudo publicar", err.message);
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  return (
-    <View style={s.rootInk}>
-      <StatusBar barStyle="light-content" />
-      <SafeAreaView style={s.flex}>
-        <View style={s.header}>
-          <Pressable onPress={onCancel} hitSlop={12} accessibilityRole="button">
-            <Text style={s.back}>‹ Volver</Text>
-          </Pressable>
-          <Text style={s.headerTitle}>{editMode ? "Editar turno" : "Nuevo turno"}</Text>
-        </View>
-
-        <View style={s.sheet}>
-          <KeyboardAvoidingView
-            style={s.flex}
-            behavior={Platform.OS === "ios" ? "padding" : undefined}
-            keyboardVerticalOffset={24}
-          >
-            <ScrollView contentContainerStyle={s.detailPad} keyboardShouldPersistTaps="handled">
-              <Text style={s.fieldLabel}>Sede</Text>
-              <TextInput
-                style={s.input}
-                value={venue}
-                onChangeText={setVenue}
-                placeholder="Costanera Center"
-                placeholderTextColor={C.muted}
-                accessibilityLabel="Sede"
-              />
-
-              <Text style={s.fieldLabel}>Servicio</Text>
-              <TextInput
-                style={s.input}
-                value={role}
-                onChangeText={setRole}
-                placeholder="Reposición retail"
-                placeholderTextColor={C.muted}
-                accessibilityLabel="Servicio"
-              />
-
-              <Text style={s.fieldLabel}>Fecha</Text>
-              <View style={s.stepper}>
-                <StepButton label="‹" onPress={() => setDate(addDays(date, -1))} />
-                <Text style={s.stepperValue}>
-                  {weekdayOf(date)} {date.slice(8, 10)} {MONTHS[parseInt(date.slice(5, 7), 10) - 1]}
-                </Text>
-                <StepButton label="›" onPress={() => setDate(addDays(date, 1))} />
-              </View>
-
-              <View style={s.splitRow}>
-                <View style={s.splitCol}>
-                  <Text style={s.fieldLabel}>Inicio</Text>
-                  <TextInput
-                    style={s.input}
-                    value={start}
-                    onChangeText={setStart}
-                    placeholder="14:00"
-                    placeholderTextColor={C.muted}
-                    keyboardType="numbers-and-punctuation"
-                    accessibilityLabel="Hora de inicio"
-                  />
-                </View>
-                <View style={{ width: 16 }} />
-                <View style={s.splitCol}>
-                  <Text style={s.fieldLabel}>Término</Text>
-                  <TextInput
-                    style={s.input}
-                    value={end}
-                    onChangeText={setEnd}
-                    placeholder="22:00"
-                    placeholderTextColor={C.muted}
-                    keyboardType="numbers-and-punctuation"
-                    accessibilityLabel="Hora de término"
-                  />
-                </View>
-              </View>
-              <Text style={s.hint}>Si el término es menor al inicio, el turno cierra al día siguiente.</Text>
-
-              <Text style={s.fieldLabel}>Taskers</Text>
-              <View style={s.stepper}>
-                <StepButton label="−" onPress={() => setNeeded(Math.max(1, needed - 1))} />
-                <Text style={s.stepperValue}>{needed}</Text>
-                <StepButton label="+" onPress={() => setNeeded(Math.min(99, needed + 1))} />
-              </View>
-
-              <Text style={s.fieldLabel}>Dirección</Text>
-              <TextInput
-                style={s.input}
-                value={address}
-                onChangeText={setAddress}
-                placeholder="Av. Andrés Bello 2425, Providencia"
-                placeholderTextColor={C.muted}
-                accessibilityLabel="Dirección"
-              />
-
-              <Text style={s.fieldLabel}>Punto del cerco</Text>
-              <Text style={s.fenceLine}>
-                {coords
-                  ? `${coords.lat.toFixed(5)}, ${coords.lng.toFixed(5)}`
-                  : "Sin punto fijado"}
-              </Text>
-              <Text style={s.hint}>
-                Sin punto, el turno se publica igual pero nadie puede marcar llegada.
-              </Text>
-              <View style={{ height: 10 }} />
-              <ActionButton
-                label={locating ? "Ubicando…" : "Usar mi ubicación actual"}
-                onPress={useMyLocation}
-                disabled={locating}
-                variant="ghost"
-              />
-
-              <Text style={s.fieldLabel}>Radio del cerco</Text>
-              <View style={s.stepper}>
-                <StepButton label="−" onPress={() => setRadius(Math.max(50, radius - 50))} />
-                <Text style={s.stepperValue}>{radius} m</Text>
-                <StepButton label="+" onPress={() => setRadius(Math.min(2000, radius + 50))} />
-              </View>
-
-              <View style={{ height: 28 }} />
-              <ActionButton
-                label={saving ? "Guardando…" : editMode ? "Guardar cambios" : "Publicar turno"}
-                onPress={save}
-                disabled={saving}
-                variant="hiviz"
-              />
-              <View style={{ height: 10 }} />
-              <ActionButton label="Cancelar" onPress={onCancel} disabled={saving} variant="ghost" />
-            </ScrollView>
-          </KeyboardAvoidingView>
         </View>
       </SafeAreaView>
     </View>
@@ -753,7 +541,7 @@ function FormScreen({ token, shift, onCancel, onSaved }) {
 // El talón: riel de fecha a la izquierda, línea troquelada, cuerpo a la derecha.
 // Las muescas superior e inferior se pintan del color del fondo para simular el
 // corte del papel.
-function ShiftStub({ shift, onPress }) {
+function ShiftStub({ shift, mine, onPress }) {
   const st = STATUS[shift.status] || STATUS.abierto;
 
   return (
@@ -787,8 +575,13 @@ function ShiftStub({ shift, onPress }) {
           <Text style={s.stubCount}>
             {shift.taskers_confirmed}/{shift.taskers_needed} Taskers
           </Text>
-          <Text style={[s.stubStatus, { color: st.color === C.hiviz ? C.brick : st.color }]}>
-            {st.label}
+          <Text
+            style={[
+              s.stubStatus,
+              { color: mine ? C.moss : st.color === C.hiviz ? C.brick : st.color },
+            ]}
+          >
+            {mine ? "Tomado" : st.label}
           </Text>
         </View>
       </View>
@@ -824,20 +617,6 @@ function DataRow({ label, value }) {
       <Text style={s.dataLabel}>{label}</Text>
       <Text style={s.dataValue}>{value}</Text>
     </View>
-  );
-}
-
-function StepButton({ label, onPress }) {
-  return (
-    <Pressable
-      onPress={onPress}
-      hitSlop={10}
-      accessibilityRole="button"
-      accessibilityLabel={label}
-      style={({ pressed }) => [s.stepBtn, pressed && { backgroundColor: C.line }]}
-    >
-      <Text style={s.stepBtnText}>{label}</Text>
-    </Pressable>
   );
 }
 
@@ -1006,6 +785,29 @@ const s = StyleSheet.create({
   segOff: { backgroundColor: C.line },
   meterCaption: { fontFamily: F.body, fontSize: 13, color: C.muted, marginTop: 10 },
   fenceLine: { fontFamily: F.displayMid, fontSize: 17, color: C.ink, letterSpacing: 0.4 },
+
+  /* encabezado de sección */
+  sectionHead: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    marginTop: 6,
+    marginBottom: 12,
+  },
+  sectionHeadText: {
+    fontFamily: F.display,
+    fontSize: 18,
+    color: C.ink,
+    textTransform: "uppercase",
+    letterSpacing: 1,
+  },
+  sectionRule: { flex: 1, height: 1, backgroundColor: C.line },
+  sectionHeadCount: {
+    fontFamily: F.bodyBold,
+    fontSize: 11,
+    letterSpacing: 1.4,
+    color: C.muted,
+  },
 
   /* vacío */
   empty: { paddingTop: 70, paddingHorizontal: 20, alignItems: "center" },
