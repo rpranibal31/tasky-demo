@@ -56,6 +56,21 @@ Detalles que vale la pena mirar en el código:
 Auth simplificada para la demo (`ADMIN_EMAIL`/`ADMIN_PASSWORD` → token estático). En producción
 se reemplaza por **Identity Platform** validando el JWT emitido.
 
+### Tests
+
+```bash
+cd backend && go test ./... -v
+```
+
+Cubren la lógica de negocio que no depende de la base: los cuatro estados derivados, la ventana
+horaria (incluido el turno que cruza medianoche) y la normalización de la entrada. `deriveStatus`
+recibe el `now` como parámetro en vez de llamar a `time.Now()` justamente para poder verificarla
+sin depender del reloj.
+
+Hay además un test de regresión sobre `asChile`: durante el desarrollo, los turnos se guardaban
+bien pero se mostraban tres horas más tarde, porque el código re-etiquetaba el `DATETIME` como
+hora de Chile en lugar de convertirlo desde UTC. El test fija el comportamiento correcto.
+
 ## Mobile
 
 Expo / React Native. Cuatro pantallas con estado simple: login → lista → detalle → formulario.

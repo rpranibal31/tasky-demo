@@ -505,14 +505,15 @@ func scanShift(sc scanner) (Shift, error) {
 	s.StartsAt = asChile(startsAt).Format(time.RFC3339)
 	s.EndsAt = asChile(endsAt).Format(time.RFC3339)
 	s.CreatedAt = asChile(createdAt).Format(time.RFC3339)
-	s.Status = deriveStatus(asChile(startsAt), asChile(endsAt), s.TaskersNeeded, s.TaskersConfirmed)
+	s.Status = deriveStatus(time.Now().In(chile), asChile(startsAt), asChile(endsAt),
+		s.TaskersNeeded, s.TaskersConfirmed)
 	return s, nil
 }
 
 // deriveStatus no se guarda en la tabla: se calcula al leer, para que el estado
-// nunca quede desincronizado del reloj ni de la dotación.
-func deriveStatus(start, end time.Time, needed, confirmed int) string {
-	now := time.Now().In(chile)
+// nunca quede desincronizado del reloj ni de la dotación. Recibe `now` en vez de
+// llamar a time.Now() para que sea verificable sin depender del reloj real.
+func deriveStatus(now, start, end time.Time, needed, confirmed int) string {
 	switch {
 	case now.After(end):
 		return "cerrado"
