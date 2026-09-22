@@ -24,12 +24,25 @@ entorno de producción real, siguiendo el stack de la vacante.
 | **Cloud Tasks** | Procesamiento async (ej. notificar Taskers, reintentos de webhooks) | No hay trabajo async que lo requiera en un CRUD simple de tareas |
 | **BigQuery + Looker Studio** | Analytics de uso (cuántas tareas se crean, por quién, SLA de cumplimiento — muy relevante al modelo de Tasky.cl de staffing con SLA de activación) | Requiere volumen de datos real y pipeline de eventos; para un demo de 3 horas no aporta señal, sí en un roadmap de 2-4 semanas |
 
-## Si esto modelara el dominio real de Tasky (staffing, no solo to-dos)
+## El modelo de dominio
 
-El "Task" de esta demo es genérico. En el dominio real de Tasky.cl, el modelo se parecería más a:
+La demo no modela "tareas" genéricas: modela **turnos**, que es la unidad real del negocio de
+Tasky. Un `Shift` tiene sede, servicio, ventana horaria y cupo de Taskers, y se va llenando con
+confirmaciones hasta quedar cubierto.
 
-- `Shift` (turno) en vez de `Task`: empresa, sede, fecha/hora, cantidad de Taskers requeridos
-- `Tasker` con verificación, historial y rating
-- `CheckIn`/`CheckOut` geolocalizado + evidencia fotográfica
-- Reemplazo automático si un Tasker no confirma o falta (probablemente vía Cloud Tasks + Cloud
-  Scheduler para el timeout)
+Dos decisiones que vale la pena defender:
+
+- **El estado es derivado, no almacenado.** `abierto / cubierto / en_curso / cerrado` se calcula al
+  leer cruzando el reloj con la dotación. Un estado persistido se desincroniza apenas pasa la hora
+  del turno y obliga a un job que lo corrija.
+- **La confirmación es atómica sin lock.** `UPDATE … WHERE taskers_confirmed < taskers_needed` y se
+  mira `RowsAffected()`. Con dos coordinadores confirmando al mismo tiempo, el cupo no se pasa.
+
+### Lo que falta para que sea el producto real
+
+- `Tasker` como entidad con verificación, historial y rating (hoy la confirmación es un contador)
+- `CheckIn`/`CheckOut` geolocalizado con evidencia fotográfica → Cloud Storage + signed URLs
+- Reemplazo automático cuando un Tasker no confirma o falta: **Cloud Tasks** con un timeout por
+  turno, que dispara la reasignación
+- Multi-tenant: hoy hay un solo usuario demo; en real, empresas con sus propios coordinadores →
+  Identity Platform con custom claims
