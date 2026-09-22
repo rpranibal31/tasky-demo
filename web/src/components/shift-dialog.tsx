@@ -42,7 +42,7 @@ export function ShiftDialog({
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger render={trigger} />
-      <DialogContent className="bg-white sm:max-w-lg">
+      <DialogContent className="max-h-[88svh] overflow-y-auto bg-white sm:max-w-lg">
         <DialogHeader>
           <DialogTitle className="font-display text-3xl uppercase tracking-wide">
             {shift ? "Editar turno" : "Nuevo turno"}
