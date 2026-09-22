@@ -27,7 +27,8 @@
         {
           "locationWhenInUsePermission": "Tasky usa tu ubicación para confirmar que llegaste al punto del turno."
         }
-      ]
+      ],
+      "expo-notifications"
     ]
   }
 }

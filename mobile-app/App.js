@@ -34,6 +34,7 @@ import {
 import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
 import * as Location from "expo-location";
 import EventSource from "react-native-sse";
+import * as Notifications from "expo-notifications";
 import { useFonts } from "expo-font";
 import {
   BarlowCondensed_600SemiBold,
@@ -49,6 +50,17 @@ const API_BASE_URL = "https://tasky-api-836283338022.us-central1.run.app";
 
 // Cada cuánto vuelve a consultar la lista cuando no hay conexión de eventos.
 const POLL_INTERVAL_MS = 8000;
+
+// Las notificaciones se muestran aunque la app esté abierta: el Tasker puede
+// estar mirando otro turno cuando entra uno nuevo.
+Notifications.setNotificationHandler({
+  handleNotification: async () => ({
+    shouldShowBanner: true,
+    shouldShowList: true,
+    shouldPlaySound: false,
+    shouldSetBadge: false,
+  }),
+});
 
 /* ---------------------------------------------------------------- tokens -- */
 
@@ -141,6 +153,38 @@ async function checkInAt(shiftId, token, coords) {
   }
 }
 
+// announce avisa al Tasker que se publicó un turno nuevo.
+//
+// Hoy la notificación se genera en el teléfono al recibir el evento SSE, así que
+// solo llega con la app corriendo. En producción el aviso lo dispara el backend:
+// al crear un turno encola una tarea en Cloud Tasks, que envía el push a los
+// Taskers con perfil compatible. Se hace con cola y no en línea para que publicar
+// un turno no dependa de que el servicio de push responda, y para tener
+// reintentos si falla. Recibir push remoto requiere un development build: Expo
+// Go dejó de soportarlo.
+async function announce(raw) {
+  try {
+    const { reason } = JSON.parse(raw);
+    if (reason !== "created") return;
+
+    const { status } = await Notifications.getPermissionsAsync();
+    if (status !== "granted") {
+      const asked = await Notifications.requestPermissionsAsync();
+      if (asked.status !== "granted") return;
+    }
+
+    await Notifications.scheduleNotificationAsync({
+      content: {
+        title: "Nuevo turno disponible",
+        body: "Se publicó un turno que podés tomar. Abrí Tasky para verlo.",
+      },
+      trigger: null, // inmediata
+    });
+  } catch {
+    // Un aviso que no se muestra no debe romper la actualización de la lista.
+  }
+}
+
 /* ------------------------------------------------------------------- app -- */
 
 export default function App() {
@@ -203,7 +247,10 @@ function AppContent() {
     source.addEventListener("open", () => setLive(true));
     source.addEventListener("error", () => setLive(false));
     source.addEventListener("close", () => setLive(false));
-    source.addEventListener("shifts", () => loadShifts({ silent: true }));
+    source.addEventListener("shifts", (ev) => {
+      loadShifts({ silent: true });
+      announce(ev.data);
+    });
 
     return () => {
       setLive(false);
@@ -366,20 +413,43 @@ function LoginScreen({ onLoggedIn }) {
 // tomar. Publicar, editar y cancelar son operaciones del coordinador y viven en
 // el panel web.
 function ListScreen({ shifts, myShiftIds, loading, live, onRefresh, onSelect }) {
-  const mine = shifts.filter((x) => myShiftIds.includes(x.id));
-  const available = shifts.filter(
-    (x) => !myShiftIds.includes(x.id) && x.status === "abierto"
-  );
+  // Un turno no es "tomable" por su estado sino por si le queda cupo y no cerró.
+  // Eso incluye los que ya empezaron: si falta gente en un turno en curso, es
+  // justamente el reemplazo que el cliente necesita ahora.
+  const isMine = (x) => myShiftIds.includes(x.id);
+  const hasRoom = (x) => x.taskers_confirmed < x.taskers_needed;
+
+  const mine = shifts.filter(isMine);
+  const others = shifts.filter((x) => !isMine(x));
+
+  const urgent = others.filter((x) => x.status === "en_curso" && hasRoom(x));
+  const available = others.filter((x) => x.status === "abierto" && hasRoom(x));
+  const noRoom = others.filter((x) => x.status !== "cerrado" && !hasRoom(x));
+  const closed = others.filter((x) => x.status === "cerrado");
 
   const sections = [
     { key: "mine", title: "Mis turnos", data: mine },
+    { key: "urgent", title: "Necesitan reemplazo", data: urgent, accent: true },
     { key: "available", title: "Disponibles", data: available },
+    { key: "noRoom", title: "Con cupo completo", data: noRoom, dim: true },
+    { key: "closed", title: "Cerrados", data: closed, dim: true },
   ].filter((sec) => sec.data.length > 0);
 
   // Una sola lista plana con encabezados: evita traer SectionList solo por esto.
   const rows = sections.flatMap((sec) => [
-    { type: "header", key: sec.key, title: sec.title, count: sec.data.length },
-    ...sec.data.map((shift) => ({ type: "shift", key: `s${shift.id}`, shift })),
+    {
+      type: "header",
+      key: sec.key,
+      title: sec.title,
+      count: sec.data.length,
+      accent: sec.accent,
+    },
+    ...sec.data.map((shift) => ({
+      type: "shift",
+      key: `s${shift.id}`,
+      shift,
+      dim: sec.dim,
+    })),
   ]);
 
   return (
@@ -396,9 +466,11 @@ function ListScreen({ shifts, myShiftIds, loading, live, onRefresh, onSelect }) 
           </View>
           <Text style={s.headerTitle}>Turnos</Text>
           <Text style={s.headerSub}>
-            {mine.length === 0
-              ? `${available.length} disponibles para tomar`
-              : `${mine.length} ${mine.length === 1 ? "turno tomado" : "turnos tomados"} · ${available.length} disponibles`}
+            {urgent.length > 0
+              ? `${urgent.length} ${urgent.length === 1 ? "turno necesita" : "turnos necesitan"} reemplazo ahora`
+              : mine.length === 0
+                ? `${available.length} disponibles para tomar`
+                : `${mine.length} ${mine.length === 1 ? "turno tomado" : "turnos tomados"} · ${available.length} disponibles`}
           </Text>
         </View>
 
@@ -418,7 +490,11 @@ function ListScreen({ shifts, myShiftIds, loading, live, onRefresh, onSelect }) 
               renderItem={({ item }) =>
                 item.type === "header" ? (
                   <View style={s.sectionHead}>
-                    <Text style={s.sectionHeadText}>{item.title}</Text>
+                    <Text
+                      style={[s.sectionHeadText, item.accent && { color: C.brick }]}
+                    >
+                      {item.title}
+                    </Text>
                     <View style={s.sectionRule} />
                     <Text style={s.sectionHeadCount}>{item.count}</Text>
                   </View>
@@ -426,6 +502,7 @@ function ListScreen({ shifts, myShiftIds, loading, live, onRefresh, onSelect }) 
                   <ShiftStub
                     shift={item.shift}
                     mine={myShiftIds.includes(item.shift.id)}
+                    dim={item.dim}
                     onPress={() => onSelect(item.shift.id)}
                   />
                 )
@@ -608,7 +685,7 @@ function DetailScreen({ token, shift, mine, onBack, onChanged, onTaken }) {
 // El talón: riel de fecha a la izquierda, línea troquelada, cuerpo a la derecha.
 // Las muescas superior e inferior se pintan del color del fondo para simular el
 // corte del papel.
-function ShiftStub({ shift, mine, onPress }) {
+function ShiftStub({ shift, mine, dim, onPress }) {
   const st = STATUS[shift.status] || STATUS.abierto;
 
   return (
@@ -616,7 +693,7 @@ function ShiftStub({ shift, mine, onPress }) {
       onPress={onPress}
       accessibilityRole="button"
       accessibilityLabel={`${shift.venue}, ${shift.role}, ${st.label}`}
-      style={({ pressed }) => [s.stub, pressed && s.stubPressed]}
+      style={({ pressed }) => [s.stub, dim && s.stubDim, pressed && s.stubPressed]}
     >
       <View style={[s.rail, { backgroundColor: st.color }]}>
         <Text style={[s.railDay, { color: st.onColor }]}>{dayOf(shift.starts_at)}</Text>
@@ -787,6 +864,7 @@ const s = StyleSheet.create({
     elevation: 2,
   },
   stubPressed: { opacity: 0.85 },
+  stubDim: { opacity: 0.55 },
   rail: {
     width: RAIL_W,
     alignItems: "center",
