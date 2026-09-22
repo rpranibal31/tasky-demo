@@ -28,10 +28,10 @@ gcloud projects delete tasky-demo-3938
 El proyecto queda 30 días en estado "pendiente de eliminación" (recuperable con
 `gcloud projects undelete tasky-demo-3938`) y deja de facturar de inmediato.
 
-> Ojo: al borrar el proyecto, las URLs públicas dejan de funcionar. Si le pasaste los links al
-> entrevistador, avisale antes o esperá a que ya no los necesiten.
+> Ojo: al borrar el proyecto, las URLs públicas dejan de funcionar. Si le enviaste los enlaces al
+> entrevistador, avísale antes o espera a que ya no los necesiten.
 
-## Alternativa granular (si querés conservar el proyecto)
+## Alternativa granular (si quieres conservar el proyecto)
 
 ```powershell
 # 1. Borrar los servicios de Cloud Run

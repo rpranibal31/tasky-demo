@@ -10,7 +10,7 @@ export type ActionState = { error?: string; ok?: boolean };
  *  que cada mutación revalida la sesión antes de tocar el API. */
 async function requireToken() {
   const token = await getToken();
-  if (!token) throw new Error("Tu sesión expiró. Volvé a ingresar.");
+  if (!token) throw new Error("Tu sesión expiró. Vuelve a ingresar.");
   return token;
 }
 

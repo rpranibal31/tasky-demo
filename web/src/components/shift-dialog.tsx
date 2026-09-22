@@ -50,7 +50,7 @@ export function ShiftDialog({
           <DialogDescription className="text-slate-muted">
             {shift
               ? "Los cambios se ven al instante en el tablero y en la app de los Taskers."
-              : "Publicá el turno y quedará disponible para que los Taskers se confirmen."}
+              : "Publica el turno y quedará disponible para que los Taskers se confirmen."}
           </DialogDescription>
         </DialogHeader>
 

@@ -87,8 +87,8 @@ export function FencePicker({
 
         <p className="text-xs text-slate-muted">
           {point
-            ? "Tocá el mapa para mover el punto."
-            : "Buscá una dirección o tocá el mapa para fijar el punto."}
+            ? "Toca el mapa para mover el punto."
+            : "Busca una dirección o toca el mapa para fijar el punto."}
         </p>
       </APIProvider>
 

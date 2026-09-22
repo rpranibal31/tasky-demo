@@ -12,7 +12,7 @@
 // cada turno se dibuja como un talón troquelado, mitad entrada de evento, mitad
 // tarjeta de reloj control.
 
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback } from "react";
 import {
   View,
   Text,
@@ -180,7 +180,7 @@ async function announce(raw) {
     await Notifications.scheduleNotificationAsync({
       content: {
         title: "Nuevo turno disponible",
-        body: "Se publicó un turno que puedes tomar. Abrí Tasky para verlo.",
+        body: "Se publicó un turno que puedes tomar. Abre Tasky para verlo.",
       },
       trigger: null, // inmediata
     });
@@ -541,7 +541,7 @@ function ListScreen({ shifts, myShiftIds, loading, live, onRefresh, onSelect }) 
                 <View style={s.empty}>
                   <Text style={s.emptyTitle}>No hay turnos disponibles</Text>
                   <Text style={s.emptyBody}>
-                    Cuando una empresa publique un turno, aparece acá para que lo tomes.
+                    Cuando una empresa publique un turno, aparece aquí para que lo tomes.
                   </Text>
                 </View>
               }
@@ -658,7 +658,7 @@ function DetailScreen({ token, shift, mine, onBack, onChanged, onTaken }) {
                 {hasFence ? (
                   <>
                     <Text style={s.fenceLine}>
-                      Tenés que estar a menos de {shift.radius_m} m del punto
+                      Debes estar a menos de {shift.radius_m} m del punto
                     </Text>
                     <Text style={s.meterCaption}>
                       {shift.checkins === 0

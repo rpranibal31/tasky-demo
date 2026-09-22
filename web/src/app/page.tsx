@@ -87,7 +87,7 @@ export default async function Page() {
                 Sin turnos publicados
               </h2>
               <p className="mt-2 text-slate-muted">
-                Publicá el primer turno para empezar a coordinar Taskers.
+                Publica el primer turno para empezar a coordinar Taskers.
               </p>
             </div>
           ) : (
