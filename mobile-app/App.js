@@ -15,7 +15,6 @@ import {
   TextInput,
   Pressable,
   FlatList,
-  SafeAreaView,
   StatusBar,
   StyleSheet,
   ActivityIndicator,
@@ -25,6 +24,9 @@ import {
   ScrollView,
   RefreshControl,
 } from "react-native";
+// El SafeAreaView de react-native quedó deprecado; este es el reemplazo oficial
+// y además soporta elegir qué bordes respetar.
+import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
 import { useFonts } from "expo-font";
 import {
   BarlowCondensed_600SemiBold,
@@ -123,6 +125,14 @@ async function api(path, { method = "GET", token, body } = {}) {
 /* ------------------------------------------------------------------- app -- */
 
 export default function App() {
+  return (
+    <SafeAreaProvider>
+      <AppContent />
+    </SafeAreaProvider>
+  );
+}
+
+function AppContent() {
   const [fontsLoaded] = useFonts({
     BarlowCondensed_600SemiBold,
     BarlowCondensed_700Bold,
