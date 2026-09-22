@@ -18,7 +18,7 @@ import {
   Alert,
 } from "react-native";
 
-const API_BASE_URL = "https://TU-URL-DE-CLOUD-RUN.a.run.app";
+const API_BASE_URL = "https://tasky-api-836283338022.us-central1.run.app";
 
 export default function App() {
   const [screen, setScreen] = useState("login"); // login | home | form
