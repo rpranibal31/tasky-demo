@@ -429,7 +429,7 @@ function ListScreen({ shifts, myShiftIds, loading, live, onRefresh, onSelect }) 
 
   const sections = [
     { key: "mine", title: "Mis turnos", data: mine },
-    { key: "urgent", title: "Necesitan reemplazo", data: urgent, accent: true },
+    { key: "urgent", title: "Te necesitamos ahora", data: urgent, accent: true },
     { key: "available", title: "Disponibles", data: available },
     { key: "noRoom", title: "Con cupo completo", data: noRoom, dim: true },
     { key: "closed", title: "Cerrados", data: closed, dim: true },
@@ -467,7 +467,7 @@ function ListScreen({ shifts, myShiftIds, loading, live, onRefresh, onSelect }) 
           <Text style={s.headerTitle}>Turnos</Text>
           <Text style={s.headerSub}>
             {urgent.length > 0
-              ? `${urgent.length} ${urgent.length === 1 ? "turno necesita" : "turnos necesitan"} reemplazo ahora`
+              ? `${urgent.length} ${urgent.length === 1 ? "turno te necesita" : "turnos te necesitan"} ahora`
               : mine.length === 0
                 ? `${available.length} disponibles para tomar`
                 : `${mine.length} ${mine.length === 1 ? "turno tomado" : "turnos tomados"} · ${available.length} disponibles`}
