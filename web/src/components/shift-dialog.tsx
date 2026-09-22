@@ -13,15 +13,18 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { FencePicker } from "@/components/fence-picker";
 import { saveShiftAction, type ActionState } from "@/app/actions";
 import { addDays, clockOf, dateOf, todayISO, type Shift } from "@/lib/shift";
 
 export function ShiftDialog({
   shift,
   trigger,
+  mapsKey,
 }: {
   shift?: Shift;
   trigger: ReactElement;
+  mapsKey: string;
 }) {
   const [open, setOpen] = useState(false);
   const [state, formAction] = useActionState<ActionState, FormData>(saveShiftAction, {});
@@ -122,54 +125,17 @@ export function ShiftDialog({
             Si el término es menor al inicio, el turno cierra al día siguiente.
           </p>
 
-          <div className="mt-1 grid gap-4 border-t border-hairline pt-4">
+          <div className="mt-1 grid gap-3 border-t border-hairline pt-4">
             <p className="eyebrow">Cerco de llegada</p>
-
-            <Field label="Dirección" htmlFor="address">
-              <Input
-                id="address"
-                name="address"
-                defaultValue={shift?.address ?? ""}
-                placeholder="Av. Andrés Bello 2425, Providencia"
-              />
-            </Field>
-
-            <div className="grid grid-cols-3 gap-4">
-              <Field label="Latitud" htmlFor="lat">
-                <Input
-                  id="lat"
-                  name="lat"
-                  type="number"
-                  step="any"
-                  defaultValue={shift?.lat ?? ""}
-                  placeholder="-33.4176"
-                />
-              </Field>
-              <Field label="Longitud" htmlFor="lng">
-                <Input
-                  id="lng"
-                  name="lng"
-                  type="number"
-                  step="any"
-                  defaultValue={shift?.lng ?? ""}
-                  placeholder="-70.6068"
-                />
-              </Field>
-              <Field label="Radio (m)" htmlFor="radius_m">
-                <Input
-                  id="radius_m"
-                  name="radius_m"
-                  type="number"
-                  min={50}
-                  max={2000}
-                  step={50}
-                  defaultValue={shift?.radius_m ?? 150}
-                />
-              </Field>
-            </div>
-
+            <FencePicker
+              apiKey={mapsKey}
+              defaultAddress={shift?.address ?? ""}
+              defaultLat={shift?.lat}
+              defaultLng={shift?.lng}
+              defaultRadius={shift?.radius_m || 150}
+            />
             <p className="text-xs leading-relaxed text-slate-muted">
-              Sin coordenadas el turno se publica igual, pero nadie puede marcar llegada desde la app.
+              Sin punto el turno se publica igual, pero nadie puede marcar llegada desde la app.
             </p>
           </div>
 

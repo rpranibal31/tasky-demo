@@ -10,6 +10,11 @@ export default async function Page() {
   const token = await getToken();
   if (!token) return <LoginForm />;
 
+  // La clave del mapa se lee en el servidor y baja como prop: es una clave de
+  // navegador (restringida por dominio), pero así no queda incrustada en el
+  // bundle en build y se puede rotar sin recompilar.
+  const mapsKey = process.env.MAPS_API_KEY ?? "";
+
   let shifts: Shift[] = [];
   let loadError: string | null = null;
   try {
@@ -47,6 +52,7 @@ export default async function Page() {
 
           <div className="ml-auto flex items-center gap-3">
             <ShiftDialog
+              mapsKey={mapsKey}
               trigger={
                 <button
                   type="button"
@@ -98,7 +104,7 @@ export default async function Page() {
                 </div>
                 <div className="grid gap-3">
                   {dayShifts.map((shift) => (
-                    <ShiftStub key={shift.id} shift={shift} />
+                    <ShiftStub key={shift.id} shift={shift} mapsKey={mapsKey} />
                   ))}
                 </div>
               </section>

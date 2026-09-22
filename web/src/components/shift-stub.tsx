@@ -17,7 +17,7 @@ const NOTCH_OFFSET = `calc(${RAIL} - 0.375rem)`;
 
 /** El talón: riel de fecha, troquel y cuerpo. Es el mismo objeto que dibuja la
  *  app móvil, tendido a lo ancho para un escritorio. */
-export function ShiftStub({ shift }: { shift: Shift }) {
+export function ShiftStub({ shift, mapsKey }: { shift: Shift; mapsKey: string }) {
   const hasFence = shift.lat !== 0 || shift.lng !== 0;
 
   return (
@@ -88,6 +88,7 @@ export function ShiftStub({ shift }: { shift: Shift }) {
           <ConfirmTaskerButton shift={shift} />
           <ShiftDialog
             shift={shift}
+            mapsKey={mapsKey}
             trigger={
               <button
                 type="button"
