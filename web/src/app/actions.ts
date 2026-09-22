@@ -64,9 +64,15 @@ export async function saveShiftAction(
   formData: FormData
 ): Promise<ActionState> {
   const id = formData.get("id");
+  // El cerco viaja completo en cada guardado: el PUT reemplaza el turno entero,
+  // así que omitir las coordenadas lo dejaría sin cerco.
   const body = {
     venue: String(formData.get("venue") ?? "").trim(),
     role: String(formData.get("role") ?? "").trim(),
+    address: String(formData.get("address") ?? "").trim(),
+    lat: Number(formData.get("lat") ?? 0),
+    lng: Number(formData.get("lng") ?? 0),
+    radius_m: Number(formData.get("radius_m") ?? 150),
     date: String(formData.get("date") ?? ""),
     start_time: String(formData.get("start_time") ?? ""),
     end_time: String(formData.get("end_time") ?? ""),

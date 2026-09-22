@@ -6,6 +6,11 @@ export type Shift = {
   id: number;
   venue: string;
   role: string;
+  address: string;
+  lat: number;
+  lng: number;
+  radius_m: number;
+  checkins: number;
   starts_at: string;
   ends_at: string;
   taskers_needed: number;

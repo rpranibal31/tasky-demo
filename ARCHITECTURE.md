@@ -38,10 +38,32 @@ Dos decisiones que vale la pena defender:
 - **La confirmación es atómica sin lock.** `UPDATE … WHERE taskers_confirmed < taskers_needed` y se
   mira `RowsAffected()`. Con dos coordinadores confirmando al mismo tiempo, el cupo no se pasa.
 
+### El cerco de llegada
+
+Cada turno define un punto y un radio. El check-in reporta coordenadas y el servidor decide si
+cuentan, calculando la distancia con la fórmula del semiverseno.
+
+Por qué aritmética en Go y no funciones espaciales de MySQL: para decenas o cientos de metros el
+semiverseno tiene error despreciable, no agrega dependencia y es trivial de testear. Cuando hiciera
+falta *buscar* por proximidad —«qué turnos tengo a menos de 2 km»— ahí sí conviene un índice
+espacial (`ST_Distance_Sphere` con índice `SPATIAL`, o PostGIS), porque el problema deja de ser
+calcular una distancia y pasa a ser filtrar sin recorrer la tabla entera.
+
+Limitaciones conocidas, que en producción habría que cubrir:
+
+- **El GPS del teléfono se puede falsear.** La validación en el servidor evita el caso fácil
+  (modificar la app), pero no un simulador de ubicación. Mitigaciones reales: contrastar con la red
+  del dispositivo, exigir foto con metadatos, y marcar como sospechosas las llegadas con precisión
+  reportada demasiado buena.
+- **No se guarda la precisión del GPS.** Un teléfono puede reportar ±50 m en interiores; hoy se
+  trata igual que una lectura exacta. Debería registrarse junto a la posición y ampliar el cerco
+  efectivo en consecuencia.
+- **No hay check-out.** Solo se registra la llegada, no la permanencia ni la salida.
+
 ### Lo que falta para que sea el producto real
 
 - `Tasker` como entidad con verificación, historial y rating (hoy la confirmación es un contador)
-- `CheckIn`/`CheckOut` geolocalizado con evidencia fotográfica → Cloud Storage + signed URLs
+- `CheckOut` y evidencia fotográfica → Cloud Storage + signed URLs
 - Reemplazo automático cuando un Tasker no confirma o falta: **Cloud Tasks** con un timeout por
   turno, que dispara la reasignación
 - Multi-tenant: hoy hay un solo usuario demo; en real, empresas con sus propios coordinadores →

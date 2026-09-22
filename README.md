@@ -40,6 +40,35 @@ leer, cruzando el reloj con la dotación confirmada.
 | `PUT` | `/shifts/{id}` | ✔ | Edita un turno |
 | `DELETE` | `/shifts/{id}` | ✔ | Cancela un turno |
 | `POST` | `/shifts/{id}/confirm` | ✔ | Suma un Tasker confirmado |
+| `POST` | `/shifts/{id}/checkin` | ✔ | Valida la llegada contra el cerco |
+
+## Cercos de llegada
+
+Cada turno tiene un punto (`lat`, `lng`) y un radio en metros. Cuando un Tasker marca llegada, la
+app reporta su posición y **el servidor decide** si cuenta: calcula la distancia real con la fórmula
+del semiverseno y la compara contra el radio.
+
+```
+POST /shifts/9/checkin   {"lat": -33.4176, "lng": -70.6068}
+201  {"inside": true,  "distance_m": 0,    "message": "Check-in registrado a 0 m del punto."}
+
+POST /shifts/9/checkin   {"lat": -33.4413, "lng": -70.6653}
+422  {"inside": false, "distance_m": 6035, "message": "Estás a 6.0 km del punto. El cerco es de 150 m."}
+```
+
+Tres decisiones que vale la pena mirar:
+
+- **La validación vive en el servidor.** El teléfono solo informa coordenadas; si la regla estuviera
+  en el cliente, bastaría con modificar la app para falsear una llegada.
+- **Fuera del cerco es `422`, no `400`.** La petición está bien formada; lo que no se cumple es una
+  regla de negocio. Y la respuesta incluye la distancia real para que la app pueda explicar *por qué*
+  falló en vez de mostrar un error genérico.
+- **Cada llegada válida se guarda** en `check_ins` con posición y distancia. El cerco sin registro no
+  sirve de nada: lo que el negocio necesita es la trazabilidad, no el permiso puntual.
+
+Las columnas del cerco se agregaron sobre una tabla que ya tenía datos en producción, con una
+migración idempotente que consulta `information_schema` antes de alterar — MySQL 8.0 no soporta
+`ADD COLUMN IF NOT EXISTS`, y un redeploy sobre una base ya migrada no debe fallar.
 
 Detalles que vale la pena mirar en el código:
 

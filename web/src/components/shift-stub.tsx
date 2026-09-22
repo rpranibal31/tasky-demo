@@ -1,4 +1,4 @@
-import { Pencil } from "lucide-react";
+import { MapPin, Pencil } from "lucide-react";
 import { Meter } from "@/components/meter";
 import { ShiftDialog } from "@/components/shift-dialog";
 import { ConfirmTaskerButton, DeleteShiftButton } from "@/components/shift-actions";
@@ -18,6 +18,8 @@ const NOTCH_OFFSET = `calc(${RAIL} - 0.375rem)`;
 /** El talón: riel de fecha, troquel y cuerpo. Es el mismo objeto que dibuja la
  *  app móvil, tendido a lo ancho para un escritorio. */
 export function ShiftStub({ shift }: { shift: Shift }) {
+  const hasFence = shift.lat !== 0 || shift.lng !== 0;
+
   return (
     <article className="relative flex rounded-sm bg-card shadow-[0_2px_6px_rgba(16,30,43,0.1)]">
       <div
@@ -47,6 +49,18 @@ export function ShiftStub({ shift }: { shift: Shift }) {
             {shift.venue}
           </h3>
           <p className="truncate text-sm text-slate-muted">{shift.role}</p>
+          {hasFence ? (
+            <p className="mt-1 flex items-center gap-1.5 text-xs text-slate-muted">
+              <MapPin className="size-3 shrink-0" aria-hidden />
+              <span className="truncate">
+                {shift.address || `${shift.lat.toFixed(4)}, ${shift.lng.toFixed(4)}`}
+                <span className="text-hairline"> · </span>
+                cerco {shift.radius_m} m
+              </span>
+            </p>
+          ) : (
+            <p className="mt-1 text-xs text-brick">Sin cerco configurado</p>
+          )}
         </div>
 
         <div className="shrink-0 sm:w-36">
@@ -64,6 +78,9 @@ export function ShiftStub({ shift }: { shift: Shift }) {
           <Meter needed={shift.taskers_needed} confirmed={shift.taskers_confirmed} />
           <p className="mt-2 text-xs text-slate-muted">
             {shift.taskers_confirmed}/{shift.taskers_needed} Taskers
+            {shift.checkins > 0 ? (
+              <span className="text-moss"> · {shift.checkins} en el punto</span>
+            ) : null}
           </p>
         </div>
 
