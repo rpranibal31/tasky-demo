@@ -27,6 +27,7 @@ import {
 // El SafeAreaView de react-native quedó deprecado; este es el reemplazo oficial
 // y además soporta elegir qué bordes respetar.
 import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
+import * as Location from "expo-location";
 import { useFonts } from "expo-font";
 import {
   BarlowCondensed_600SemiBold,
@@ -120,6 +121,27 @@ async function api(path, { method = "GET", token, body } = {}) {
     throw new Error(text.trim() || `Error ${res.status}`);
   }
   return res.status === 204 ? null : res.json();
+}
+
+// El check-in es el único endpoint donde un 422 no es un fallo sino una
+// respuesta útil: "estás fuera del cerco, a tantos metros". Por eso se lee el
+// cuerpo en vez de tratar el código de error como excepción.
+async function checkInAt(shiftId, token, coords) {
+  const res = await fetch(`${API_BASE_URL}/shifts/${shiftId}/checkin`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify(coords),
+  });
+
+  const text = await res.text();
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new Error(text.trim() || `Error ${res.status}`);
+  }
 }
 
 /* ------------------------------------------------------------------- app -- */
@@ -361,6 +383,7 @@ function DetailScreen({ token, shift, onBack, onChanged, onEdit, onDeleted }) {
   const st = STATUS[shift.status] || STATUS.abierto;
   const full = shift.taskers_confirmed >= shift.taskers_needed;
   const closed = shift.status === "cerrado";
+  const hasFence = !!(shift.lat || shift.lng);
 
   async function confirmTasker() {
     setBusy(true);
@@ -369,6 +392,42 @@ function DetailScreen({ token, shift, onBack, onChanged, onEdit, onDeleted }) {
       await onChanged();
     } catch (err) {
       Alert.alert("No se pudo confirmar", err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // El teléfono solo reporta dónde está; quien decide si eso cuenta como
+  // llegada es el servidor, comparando contra el cerco del turno.
+  async function doCheckIn() {
+    setBusy(true);
+    try {
+      const { status } = await Location.requestForegroundPermissionsAsync();
+      if (status !== "granted") {
+        Alert.alert(
+          "Falta el permiso de ubicación",
+          "Tasky la necesita para confirmar que estás en el punto del turno."
+        );
+        return;
+      }
+
+      const pos = await Location.getCurrentPositionAsync({
+        accuracy: Location.Accuracy.Balanced,
+      });
+
+      const result = await checkInAt(shift.id, token, {
+        lat: pos.coords.latitude,
+        lng: pos.coords.longitude,
+      });
+
+      if (result.inside) {
+        Alert.alert("Llegada registrada", result.message);
+        await onChanged();
+      } else {
+        Alert.alert("Estás fuera del cerco", result.message);
+      }
+    } catch (err) {
+      Alert.alert("No se pudo registrar la llegada", err.message);
     } finally {
       setBusy(false);
     }
@@ -430,12 +489,36 @@ function DetailScreen({ token, shift, onBack, onChanged, onEdit, onDeleted }) {
             />
             <DataRow label="Sede" value={shift.venue} />
             <DataRow label="Servicio" value={shift.role} />
+            {!!shift.address && <DataRow label="Dirección" value={shift.address} />}
 
             <Text style={s.sectionLabel}>Dotación</Text>
             <Meter needed={shift.taskers_needed} confirmed={shift.taskers_confirmed} />
             <Text style={s.meterCaption}>
               {shift.taskers_confirmed} de {shift.taskers_needed} Taskers confirmados
             </Text>
+
+            <Text style={s.sectionLabel}>Cerco de llegada</Text>
+            {hasFence ? (
+              <>
+                <Text style={s.fenceLine}>
+                  Radio de {shift.radius_m} m sobre el punto del turno
+                </Text>
+                <Text style={s.meterCaption}>
+                  {shift.checkins === 0
+                    ? "Todavía nadie marcó llegada"
+                    : `${shift.checkins} ${shift.checkins === 1 ? "llegada registrada" : "llegadas registradas"}`}
+                </Text>
+                <View style={{ height: 14 }} />
+                <ActionButton
+                  label={busy ? "Ubicando…" : "Marcar llegada"}
+                  onPress={doCheckIn}
+                  disabled={busy || closed}
+                  variant="hiviz"
+                />
+              </>
+            ) : (
+              <Text style={s.fenceLine}>Este turno no tiene cerco configurado.</Text>
+            )}
 
             <View style={{ height: 28 }} />
             <ActionButton
@@ -468,7 +551,37 @@ function FormScreen({ token, shift, onCancel, onSaved }) {
   const [start, setStart] = useState(shift ? clockOf(shift.starts_at) : "14:00");
   const [end, setEnd] = useState(shift ? clockOf(shift.ends_at) : "22:00");
   const [needed, setNeeded] = useState(shift ? shift.taskers_needed : 4);
+  const [address, setAddress] = useState(shift ? shift.address : "");
+  const [radius, setRadius] = useState(shift ? shift.radius_m || 150 : 150);
+  const [coords, setCoords] = useState(
+    shift && (shift.lat || shift.lng) ? { lat: shift.lat, lng: shift.lng } : null
+  );
+  const [locating, setLocating] = useState(false);
   const [saving, setSaving] = useState(false);
+
+  // Tomar el punto donde estás parado es la forma más rápida de definir un
+  // cerco en terreno: el coordinador llega a la sede y marca ahí mismo.
+  async function useMyLocation() {
+    setLocating(true);
+    try {
+      const { status } = await Location.requestForegroundPermissionsAsync();
+      if (status !== "granted") {
+        Alert.alert(
+          "Falta el permiso de ubicación",
+          "Tasky la necesita para fijar el punto del turno."
+        );
+        return;
+      }
+      const pos = await Location.getCurrentPositionAsync({
+        accuracy: Location.Accuracy.Balanced,
+      });
+      setCoords({ lat: pos.coords.latitude, lng: pos.coords.longitude });
+    } catch (err) {
+      Alert.alert("No se pudo obtener tu ubicación", err.message);
+    } finally {
+      setLocating(false);
+    }
+  }
 
   async function save() {
     if (!venue.trim()) return Alert.alert("Falta la sede", "Indicá dónde se ejecuta el turno.");
@@ -479,6 +592,10 @@ function FormScreen({ token, shift, onCancel, onSaved }) {
       const body = {
         venue: venue.trim(),
         role: role.trim(),
+        address: address.trim(),
+        lat: coords ? coords.lat : 0,
+        lng: coords ? coords.lng : 0,
+        radius_m: radius,
         date,
         start_time: start,
         end_time: end,
@@ -578,6 +695,40 @@ function FormScreen({ token, shift, onCancel, onSaved }) {
                 <StepButton label="−" onPress={() => setNeeded(Math.max(1, needed - 1))} />
                 <Text style={s.stepperValue}>{needed}</Text>
                 <StepButton label="+" onPress={() => setNeeded(Math.min(99, needed + 1))} />
+              </View>
+
+              <Text style={s.fieldLabel}>Dirección</Text>
+              <TextInput
+                style={s.input}
+                value={address}
+                onChangeText={setAddress}
+                placeholder="Av. Andrés Bello 2425, Providencia"
+                placeholderTextColor={C.muted}
+                accessibilityLabel="Dirección"
+              />
+
+              <Text style={s.fieldLabel}>Punto del cerco</Text>
+              <Text style={s.fenceLine}>
+                {coords
+                  ? `${coords.lat.toFixed(5)}, ${coords.lng.toFixed(5)}`
+                  : "Sin punto fijado"}
+              </Text>
+              <Text style={s.hint}>
+                Sin punto, el turno se publica igual pero nadie puede marcar llegada.
+              </Text>
+              <View style={{ height: 10 }} />
+              <ActionButton
+                label={locating ? "Ubicando…" : "Usar mi ubicación actual"}
+                onPress={useMyLocation}
+                disabled={locating}
+                variant="ghost"
+              />
+
+              <Text style={s.fieldLabel}>Radio del cerco</Text>
+              <View style={s.stepper}>
+                <StepButton label="−" onPress={() => setRadius(Math.max(50, radius - 50))} />
+                <Text style={s.stepperValue}>{radius} m</Text>
+                <StepButton label="+" onPress={() => setRadius(Math.min(2000, radius + 50))} />
               </View>
 
               <View style={{ height: 28 }} />
@@ -854,6 +1005,7 @@ const s = StyleSheet.create({
   segOn: { backgroundColor: C.moss },
   segOff: { backgroundColor: C.line },
   meterCaption: { fontFamily: F.body, fontSize: 13, color: C.muted, marginTop: 10 },
+  fenceLine: { fontFamily: F.displayMid, fontSize: 17, color: C.ink, letterSpacing: 0.4 },
 
   /* vacío */
   empty: { paddingTop: 70, paddingHorizontal: 20, alignItems: "center" },

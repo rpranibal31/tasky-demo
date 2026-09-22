@@ -7,6 +7,7 @@
     "@expo-google-fonts/inter": "^0.4.2",
     "expo": "~57.0.24",
     "expo-font": "~57.0.4",
+    "expo-location": "~57.0.19",
     "expo-status-bar": "~57.0.1",
     "react": "19.2.3",
     "react-native": "0.86.3",

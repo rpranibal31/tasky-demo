@@ -25,6 +25,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math"
 	"net/http"
 	"os"
 	"strconv"
@@ -45,25 +46,42 @@ var chile = time.FixedZone("-03", -3*60*60)
 const demoToken = "demo-token"
 
 type Shift struct {
-	ID               int64  `json:"id"`
-	Venue            string `json:"venue"`
-	Role             string `json:"role"`
-	StartsAt         string `json:"starts_at"`
-	EndsAt           string `json:"ends_at"`
-	TaskersNeeded    int    `json:"taskers_needed"`
-	TaskersConfirmed int    `json:"taskers_confirmed"`
-	Status           string `json:"status"`
-	CreatedAt        string `json:"created_at"`
+	ID               int64   `json:"id"`
+	Venue            string  `json:"venue"`
+	Role             string  `json:"role"`
+	Address          string  `json:"address"`
+	Lat              float64 `json:"lat"`
+	Lng              float64 `json:"lng"`
+	RadiusM          int     `json:"radius_m"`
+	StartsAt         string  `json:"starts_at"`
+	EndsAt           string  `json:"ends_at"`
+	TaskersNeeded    int     `json:"taskers_needed"`
+	TaskersConfirmed int     `json:"taskers_confirmed"`
+	CheckIns         int     `json:"checkins"`
+	Status           string  `json:"status"`
+	CreatedAt        string  `json:"created_at"`
 }
 
 type createShiftRequest struct {
-	Venue         string `json:"venue"`
-	Role          string `json:"role"`
-	Date          string `json:"date"`       // AAAA-MM-DD
-	StartTime     string `json:"start_time"` // HH:MM
-	EndTime       string `json:"end_time"`   // HH:MM
-	TaskersNeeded int    `json:"taskers_needed"`
+	Venue         string  `json:"venue"`
+	Role          string  `json:"role"`
+	Address       string  `json:"address"`
+	Lat           float64 `json:"lat"`
+	Lng           float64 `json:"lng"`
+	RadiusM       int     `json:"radius_m"`
+	Date          string  `json:"date"`       // AAAA-MM-DD
+	StartTime     string  `json:"start_time"` // HH:MM
+	EndTime       string  `json:"end_time"`   // HH:MM
+	TaskersNeeded int     `json:"taskers_needed"`
 }
+
+// checkInRequest lleva la posición que reporta el teléfono del Tasker.
+type checkInRequest struct {
+	Lat float64 `json:"lat"`
+	Lng float64 `json:"lng"`
+}
+
+const defaultRadiusM = 150
 
 type loginRequest struct {
 	Email    string `json:"email"`
@@ -91,6 +109,7 @@ func main() {
 	mux.HandleFunc("/shifts", withCORS(handleShifts))
 	mux.HandleFunc("/shifts/{id}", withCORS(handleShiftByID))
 	mux.HandleFunc("/shifts/{id}/confirm", withCORS(handleConfirm))
+	mux.HandleFunc("/shifts/{id}/checkin", withCORS(handleCheckIn))
 
 	port := os.Getenv("PORT")
 	if port == "" {
@@ -130,7 +149,7 @@ func connectDB() (*sql.DB, error) {
 
 func ensureSchema() error {
 	// `role` es palabra reservada en MySQL 8.0, por eso la columna es job_role.
-	_, err := db.Exec(`
+	if _, err := db.Exec(`
 		CREATE TABLE IF NOT EXISTS shifts (
 			id INT AUTO_INCREMENT PRIMARY KEY,
 			venue VARCHAR(160) NOT NULL,
@@ -141,7 +160,59 @@ func ensureSchema() error {
 			taskers_confirmed INT NOT NULL DEFAULT 0,
 			created_at DATETIME NOT NULL,
 			INDEX idx_starts_at (starts_at)
+		)`); err != nil {
+		return err
+	}
+
+	// El cerco se agregó después de que la tabla ya tenía datos en producción,
+	// así que las columnas se suman con una migración idempotente en vez de
+	// recrear la tabla. MySQL 8.0 no soporta ADD COLUMN IF NOT EXISTS.
+	columns := []struct{ name, definition string }{
+		{"address", "VARCHAR(240) NOT NULL DEFAULT ''"},
+		{"lat", "DOUBLE NOT NULL DEFAULT 0"},
+		{"lng", "DOUBLE NOT NULL DEFAULT 0"},
+		{"radius_m", "INT NOT NULL DEFAULT 150"},
+	}
+	for _, c := range columns {
+		if err := ensureColumn("shifts", c.name, c.definition); err != nil {
+			return err
+		}
+	}
+
+	// Cada check-in guarda dónde estaba el Tasker y a qué distancia del punto:
+	// esa es la trazabilidad que justifica el cerco.
+	_, err := db.Exec(`
+		CREATE TABLE IF NOT EXISTS check_ins (
+			id INT AUTO_INCREMENT PRIMARY KEY,
+			shift_id INT NOT NULL,
+			lat DOUBLE NOT NULL,
+			lng DOUBLE NOT NULL,
+			distance_m INT NOT NULL,
+			created_at DATETIME NOT NULL,
+			INDEX idx_shift (shift_id)
 		)`)
+	return err
+}
+
+// ensureColumn agrega una columna solo si todavía no existe. Consultar
+// information_schema antes de alterar evita que un redeploy falle sobre una
+// base que ya fue migrada.
+func ensureColumn(table, column, definition string) error {
+	var found int
+	err := db.QueryRow(`
+		SELECT COUNT(*) FROM information_schema.columns
+		WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?`,
+		table, column).Scan(&found)
+	if err != nil {
+		return err
+	}
+	if found > 0 {
+		return nil
+	}
+	_, err = db.Exec(fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", table, column, definition))
+	if err == nil {
+		log.Printf("migración: %s.%s agregada", table, column)
+	}
 	return err
 }
 
@@ -168,24 +239,33 @@ func seedIfEmpty() error {
 	seeds := []struct {
 		venue     string
 		role      string
+		address   string
+		lat       float64
+		lng       float64
+		radius    int
 		base      time.Time
 		startH    int
 		endH      int
 		needed    int
 		confirmed int
 	}{
-		{"Costanera Center", "Reposición retail", day(1), 14, 22, 4, 4},
-		{"Movistar Arena", "Control de acceso", day(2), 18, 26, 12, 7},
-		{"Enea Pudahuel", "Picking y despacho", day(3), 7, 15, 6, 2},
+		{"Costanera Center", "Reposición retail", "Av. Andrés Bello 2425, Providencia",
+			-33.417600, -70.606800, 150, day(1), 14, 22, 4, 4},
+		{"Movistar Arena", "Control de acceso", "Av. Beaucheff 1204, Santiago",
+			-33.441300, -70.665300, 200, day(2), 18, 26, 12, 7},
+		{"Enea Pudahuel", "Picking y despacho", "Parque Enea, Pudahuel",
+			-33.390000, -70.790000, 300, day(3), 7, 15, 6, 2},
 	}
 
 	for _, s := range seeds {
 		start := at(s.base, s.startH, 0)
 		end := at(s.base, s.endH, 0)
 		_, err := db.Exec(`
-			INSERT INTO shifts (venue, job_role, starts_at, ends_at, taskers_needed, taskers_confirmed, created_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?)`,
-			s.venue, s.role, start, end, s.needed, s.confirmed, time.Now().In(chile))
+			INSERT INTO shifts (venue, job_role, address, lat, lng, radius_m,
+				starts_at, ends_at, taskers_needed, taskers_confirmed, created_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			s.venue, s.role, s.address, s.lat, s.lng, s.radius,
+			start, end, s.needed, s.confirmed, time.Now().In(chile))
 		if err != nil {
 			return err
 		}
@@ -261,7 +341,9 @@ func handleShifts(w http.ResponseWriter, r *http.Request) {
 
 func listShifts(w http.ResponseWriter, r *http.Request) {
 	rows, err := db.Query(`
-		SELECT id, venue, job_role, starts_at, ends_at, taskers_needed, taskers_confirmed, created_at
+		SELECT id, venue, job_role, address, lat, lng, radius_m,
+			starts_at, ends_at, taskers_needed, taskers_confirmed, created_at,
+			(SELECT COUNT(*) FROM check_ins c WHERE c.shift_id = shifts.id)
 		FROM shifts ORDER BY starts_at ASC`)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -299,9 +381,11 @@ func createShift(w http.ResponseWriter, r *http.Request) {
 	}
 
 	res, err := db.Exec(`
-		INSERT INTO shifts (venue, job_role, starts_at, ends_at, taskers_needed, taskers_confirmed, created_at)
-		VALUES (?, ?, ?, ?, ?, 0, ?)`,
-		req.Venue, req.Role, start, end, req.TaskersNeeded, time.Now().In(chile))
+		INSERT INTO shifts (venue, job_role, address, lat, lng, radius_m,
+			starts_at, ends_at, taskers_needed, taskers_confirmed, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)`,
+		req.Venue, req.Role, req.Address, req.Lat, req.Lng, req.RadiusM,
+		start, end, req.TaskersNeeded, time.Now().In(chile))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -330,6 +414,15 @@ func validateShift(req *createShiftRequest) (time.Time, time.Time, error) {
 	}
 	if req.TaskersNeeded < 1 {
 		req.TaskersNeeded = 1
+	}
+	req.Address = strings.TrimSpace(req.Address)
+	if req.RadiusM <= 0 {
+		req.RadiusM = defaultRadiusM
+	}
+	// Un cerco sin coordenadas no valida nada; se acepta el turno pero queda sin
+	// cerco, y el check-in lo rechaza explicando por qué.
+	if (req.Lat != 0 || req.Lng != 0) && !validCoordinate(req.Lat, req.Lng) {
+		return time.Time{}, time.Time{}, fmt.Errorf("coordenadas inválidas")
 	}
 
 	start, err := parseWallClock(req.Date, req.StartTime)
@@ -411,9 +504,11 @@ func updateShift(w http.ResponseWriter, r *http.Request, id int64) {
 	}
 
 	_, err = db.Exec(`
-		UPDATE shifts SET venue = ?, job_role = ?, starts_at = ?, ends_at = ?, taskers_needed = ?
+		UPDATE shifts SET venue = ?, job_role = ?, address = ?, lat = ?, lng = ?, radius_m = ?,
+			starts_at = ?, ends_at = ?, taskers_needed = ?
 		WHERE id = ?`,
-		req.Venue, req.Role, start, end, req.TaskersNeeded, id)
+		req.Venue, req.Role, req.Address, req.Lat, req.Lng, req.RadiusM,
+		start, end, req.TaskersNeeded, id)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -484,7 +579,9 @@ func handleConfirm(w http.ResponseWriter, r *http.Request) {
 
 func getShift(id int64) (Shift, error) {
 	row := db.QueryRow(`
-		SELECT id, venue, job_role, starts_at, ends_at, taskers_needed, taskers_confirmed, created_at
+		SELECT id, venue, job_role, address, lat, lng, radius_m,
+			starts_at, ends_at, taskers_needed, taskers_confirmed, created_at,
+			(SELECT COUNT(*) FROM check_ins c WHERE c.shift_id = shifts.id)
 		FROM shifts WHERE id = ?`, id)
 	return scanShift(row)
 }
@@ -497,8 +594,8 @@ type scanner interface {
 func scanShift(sc scanner) (Shift, error) {
 	var s Shift
 	var startsAt, endsAt, createdAt time.Time
-	err := sc.Scan(&s.ID, &s.Venue, &s.Role, &startsAt, &endsAt,
-		&s.TaskersNeeded, &s.TaskersConfirmed, &createdAt)
+	err := sc.Scan(&s.ID, &s.Venue, &s.Role, &s.Address, &s.Lat, &s.Lng, &s.RadiusM,
+		&startsAt, &endsAt, &s.TaskersNeeded, &s.TaskersConfirmed, &createdAt, &s.CheckIns)
 	if err != nil {
 		return s, err
 	}
@@ -508,6 +605,114 @@ func scanShift(sc scanner) (Shift, error) {
 	s.Status = deriveStatus(time.Now().In(chile), asChile(startsAt), asChile(endsAt),
 		s.TaskersNeeded, s.TaskersConfirmed)
 	return s, nil
+}
+
+// handleCheckIn valida que el Tasker esté dentro del cerco del turno antes de
+// registrar su llegada. La validación pasa en el servidor a propósito: la app
+// solo reporta coordenadas, y lo que decide si son aceptables es el backend.
+func handleCheckIn(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !authorized(r) {
+		http.Error(w, "no autorizado", http.StatusUnauthorized)
+		return
+	}
+
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		http.Error(w, "id inválido", http.StatusBadRequest)
+		return
+	}
+
+	var req checkInRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid body", http.StatusBadRequest)
+		return
+	}
+	if !validCoordinate(req.Lat, req.Lng) {
+		http.Error(w, "coordenadas inválidas", http.StatusBadRequest)
+		return
+	}
+
+	shift, err := getShift(id)
+	if err == sql.ErrNoRows {
+		http.Error(w, "turno no encontrado", http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if shift.Lat == 0 && shift.Lng == 0 {
+		http.Error(w, "el turno no tiene un cerco configurado", http.StatusUnprocessableEntity)
+		return
+	}
+
+	radius := shift.RadiusM
+	if radius <= 0 {
+		radius = defaultRadiusM
+	}
+	distance := int(distanceMeters(req.Lat, req.Lng, shift.Lat, shift.Lng) + 0.5)
+	inside := distance <= radius
+
+	result := map[string]any{
+		"inside":     inside,
+		"distance_m": distance,
+		"radius_m":   radius,
+		"venue":      shift.Venue,
+		"address":    shift.Address,
+	}
+
+	if !inside {
+		// 422: la petición es válida pero la posición no cumple la regla.
+		result["message"] = fmt.Sprintf("Estás a %s del punto. El cerco es de %d m.",
+			humanDistance(distance), radius)
+		writeJSON(w, http.StatusUnprocessableEntity, result)
+		return
+	}
+
+	_, err = db.Exec(`
+		INSERT INTO check_ins (shift_id, lat, lng, distance_m, created_at)
+		VALUES (?, ?, ?, ?, ?)`,
+		id, req.Lat, req.Lng, distance, time.Now().In(chile))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	result["message"] = fmt.Sprintf("Check-in registrado a %s del punto.", humanDistance(distance))
+	writeJSON(w, http.StatusCreated, result)
+}
+
+// distanceMeters calcula la distancia sobre la superficie terrestre entre dos
+// coordenadas (fórmula del semiverseno). Es suficiente para cercos de decenas o
+// cientos de metros; para precisión geodésica real habría que usar PostGIS o las
+// funciones espaciales de MySQL.
+func distanceMeters(lat1, lng1, lat2, lng2 float64) float64 {
+	const earthRadiusM = 6371000.0
+
+	rad := func(deg float64) float64 { return deg * math.Pi / 180 }
+
+	dLat := rad(lat2 - lat1)
+	dLng := rad(lng2 - lng1)
+
+	a := math.Sin(dLat/2)*math.Sin(dLat/2) +
+		math.Cos(rad(lat1))*math.Cos(rad(lat2))*math.Sin(dLng/2)*math.Sin(dLng/2)
+
+	return earthRadiusM * 2 * math.Atan2(math.Sqrt(a), math.Sqrt(1-a))
+}
+
+func validCoordinate(lat, lng float64) bool {
+	return lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180 && !(lat == 0 && lng == 0)
+}
+
+func humanDistance(meters int) string {
+	if meters < 1000 {
+		return fmt.Sprintf("%d m", meters)
+	}
+	return fmt.Sprintf("%.1f km", float64(meters)/1000)
 }
 
 // deriveStatus no se guarda en la tabla: se calcula al leer, para que el estado

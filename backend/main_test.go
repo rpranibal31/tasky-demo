@@ -1,9 +1,121 @@
 package main
 
 import (
+	"math"
 	"testing"
 	"time"
 )
+
+// Coordenadas reales usadas en los turnos de ejemplo.
+const (
+	costaneraLat, costaneraLng = -33.417600, -70.606800
+	movistarLat, movistarLng   = -33.441300, -70.665300
+)
+
+func TestDistanceMeters(t *testing.T) {
+	t.Run("el mismo punto da cero", func(t *testing.T) {
+		if d := distanceMeters(costaneraLat, costaneraLng, costaneraLat, costaneraLng); d != 0 {
+			t.Errorf("distancia = %f, se esperaba 0", d)
+		}
+	})
+
+	t.Run("cien metros al norte", func(t *testing.T) {
+		// Un grado de latitud son ~111.32 km, así que 100 m son ~0.000898°.
+		got := distanceMeters(costaneraLat, costaneraLng, costaneraLat+0.00089832, costaneraLng)
+		if math.Abs(got-100) > 1 {
+			t.Errorf("distancia = %.1f m, se esperaban 100 m (±1)", got)
+		}
+	})
+
+	t.Run("es simetrica", func(t *testing.T) {
+		ida := distanceMeters(costaneraLat, costaneraLng, movistarLat, movistarLng)
+		vuelta := distanceMeters(movistarLat, movistarLng, costaneraLat, costaneraLng)
+		if math.Abs(ida-vuelta) > 0.001 {
+			t.Errorf("ida = %.3f, vuelta = %.3f: deberían ser iguales", ida, vuelta)
+		}
+	})
+
+	t.Run("dos sedes reales de Santiago", func(t *testing.T) {
+		// Costanera Center a Movistar Arena son unos 6 km en línea recta.
+		got := distanceMeters(costaneraLat, costaneraLng, movistarLat, movistarLng)
+		if got < 5500 || got > 6500 {
+			t.Errorf("distancia = %.0f m, se esperaba entre 5500 y 6500", got)
+		}
+	})
+}
+
+// El cerco es una sola comparación, pero es la regla que decide si a un Tasker
+// le cuenta el turno: conviene fijar el borde exacto.
+func TestDecisionDelCerco(t *testing.T) {
+	const radius = 150
+
+	cases := []struct {
+		name          string
+		metrosAlNorte float64
+		wantInside    bool
+	}{
+		{"parado justo en el punto", 0, true},
+		{"dentro del cerco", 100, true},
+		{"justo en el borde", 150, true},
+		{"apenas afuera", 160, false},
+		{"en la otra punta de la ciudad", 6000, false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// 1 m ≈ 0.0000089832° de latitud.
+			lat := costaneraLat + tc.metrosAlNorte*0.0000089832
+			distance := int(distanceMeters(lat, costaneraLng, costaneraLat, costaneraLng) + 0.5)
+			inside := distance <= radius
+
+			if inside != tc.wantInside {
+				t.Errorf("a %.0f m: dentro = %v (distancia calculada %d m), se esperaba %v",
+					tc.metrosAlNorte, inside, distance, tc.wantInside)
+			}
+		})
+	}
+}
+
+func TestValidCoordinate(t *testing.T) {
+	cases := []struct {
+		name     string
+		lat, lng float64
+		want     bool
+	}{
+		{"Santiago", -33.4176, -70.6068, true},
+		{"latitud fuera de rango", 91, 0, false},
+		{"longitud fuera de rango", 0, 181, false},
+		// (0,0) es el Golfo de Guinea: casi siempre significa "no hay dato".
+		{"cero cero se rechaza", 0, 0, false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := validCoordinate(tc.lat, tc.lng); got != tc.want {
+				t.Errorf("validCoordinate(%v, %v) = %v, se esperaba %v", tc.lat, tc.lng, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestHumanDistance(t *testing.T) {
+	cases := []struct {
+		meters int
+		want   string
+	}{
+		{0, "0 m"},
+		{45, "45 m"},
+		{999, "999 m"},
+		{1000, "1.0 km"},
+		{6043, "6.0 km"},
+	}
+
+	for _, tc := range cases {
+		if got := humanDistance(tc.meters); got != tc.want {
+			t.Errorf("humanDistance(%d) = %q, se esperaba %q", tc.meters, got, tc.want)
+		}
+	}
+}
 
 // at construye una hora de Chile para los casos de prueba.
 func at(day, hour, min int) time.Time {
